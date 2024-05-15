@@ -1,0 +1,38 @@
+#
+# This is an attempt at creating a 'plan'
+#
+
+[global]
+    name = "This plan's name"
+    owner = {name="Owner's full name", email="user@some.where"}
+
+[when]
+    from = "isoformat"  # earliest start time
+    to = "isoformat"  # latest start time
+
+[target]
+    ra = 12.345  # RA (sexagesimal or HMS.FF)
+    dec = 3.14  # DEC (sexagesimal or DMS.FF)
+
+[conditions]
+    max-airmass = 1.345
+    moon = {min-distance = 10, max-percent = 25}
+    max-humidity = 80  # percent
+    max-wind-speed = 45  # km/h
+
+[equipment]
+    #
+    # NOTE: The units are numbered from 1 to 20
+    #
+    # The units we need:
+    # - "all" - all the available units
+    # - [x, y, z] - specific list of unit numbers
+    # - 'specifier' = any:N[:(north|south)] - any N units. The building may be specified (defaults to 'north')
+    # - list of 'specifiers' - [any:2:north, any:3:south]
+    #
+    units = "all"  # all the available units
+    units = "spec"
+
+[spec.filters]
+    ThAr = 'ND5000'
+    qTh = 'ND1000'

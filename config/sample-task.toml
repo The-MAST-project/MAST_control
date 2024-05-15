@@ -1,0 +1,63 @@
+#
+# This is a sample and template for a MAST 'Task' description file
+#
+# For the MAST Task in this file:
+#  - Units:
+#     - all requested (and available) units will slew to their respective targets for this 'Task'
+#     - after arival:
+#        - units that haven't been focused for the current night will autofocus
+#        - all units will start tracking and guiding, then become 'operational'
+#  - Instruments (gratings, filters, lamps, etc.):
+#    - will be set up for the current 'Task'
+#    - the camera(s) for the Task's spectrograph will be set up
+#    - the exposur will be started
+#    - the accumulated data (images, correction lists, etc.) both from the units and the spectrograph will be
+#       accumulated and maybe packaged in one FITS file
+#
+
+[global]
+    priority = 0  # TBD: 0 is normal
+
+[instruments]
+    # Select the spectrograph for this Task
+    spec = "deepspec"  # either "deepspec" or "highspec"
+
+    #
+    # The calibration lamps listed below will be turned ON and their respective filters will be selected
+    # A missing lamp (or both) will be turned off.  Same if the whole 'calibration' entry is missing
+    #
+    # For no calibration lamps use:
+    #  calibration = null
+    #
+    calibration = [
+        {lamp = 'ThAr', filter = 'ND5000'},
+        {lamp = 'qTh', filter = 'ND1000'}
+    ]
+
+    #
+    # Select the grating.  One of "Ca", "Halpha" or "Mg"
+    #
+    grating = "Ca"
+
+    #
+    # Settings for the detector(s)
+    #
+    # - For 'highspec' - settings for the Andor camera
+    detector = {exposure = 15, read_mode = 'xyz', gain = 200, binning = 1}
+    # - For 'deepspec' - settings for each of the four Greateyes cameras ['U', 'G', 'R', 'I']
+    detectors = {exposures = [10, 15, 20 , 25], read_modes = ['a', 'b', 'c', 'd'], gains = [200, 201, 202, 203], binnings = [1, 2, 1, 1]}
+
+[observation]
+    targets = [
+        #
+        # A list of targets for this 'observation'
+        # - name: [required] any string that makes a valid file name
+        # - coords: [required] either sexagesimal or decimal
+        # - units: [required] a list of required units.
+        #    NOTE: a unit may not be requested by more than one target
+        # - max_snr: [optional] may help with scheduling
+        #
+        {name = "ABC123", coords = {ra=12.34, dec=23.45}, units = [1], max_snr = 1.3},
+        {name = "ABC123", coords = {ra=12.34, dec=23.45}, units = [2,3]},
+        {name = "ABC123", coords = {ra=12.34, dec=23.45}, units = [7,8,9]}
+    ]
