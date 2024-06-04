@@ -4,8 +4,10 @@ import time
 from common.utils import init_log, path_maker, BASE_CONTROL_PATH, Component, time_stamp
 from common.fswatcher import FsWatcher
 from common.config import Config
-from common.api import ApiUnit, ApiSpec, ApiResponse
-from planning.plans import Plan, sort_by_merit
+from common.api import ApiUnit, ApiSpec
+from common.networking import NetworkedDevice
+from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from planning.plans import Plan
 import logging
 from typing import List
 from watchdog.events import FileSystemEvent
@@ -84,45 +86,63 @@ class Spec(Component):
             self.api.client.get('shutdown')
 
 
-class Unit(Component):
-    def __init__(self, unit_id: int):
-        if not 1 <= unit_id <= Config.NUMBER_OF_UNITS:
-            raise ValueError(f"bad {unit_id=}, unit id must be between 1 and {Config.NUMBER_OF_UNITS}")
+class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
+    def __init__(self, host: str):
         Component.__init__(self)
-        self._name = f"mast{unit_id:02d}"
-        self.host = self.name
+        NetworkedDevice.__init__(self, conf={'network': {'host': host}})
+        SwitchedPowerDevice.__init__(self, host=host.replace('mast', 'mastps'), outlet=6,
+                                     upload_outlet_names=False)
+        if not self.is_on():
+            self.power_on()
+            # TODO: wait till the unit computer boots
+        self.powered = self.is_on()
         self._was_shut_down = False
         # ApiUnit calls the remote 'status'
-        logger.info(f"trying to make a Unit({unit_id=}) connection with host='{self.host}' ...")
-        self.api = ApiUnit(self.host)
+        logger.info(f"trying to make an ApiUnit(host='{self.destination.hostname}') connection ...")
+        self.api = ApiUnit(self.destination.hostname)
 
     @property
     def detected(self) -> bool:
+        if not self.api.client:
+            return False
+
         st = self.api.client.get('status') if self.api else None
         return st.detected if st else False
 
     @property
     def connected(self) -> bool:
+        if not self.api.client:
+            return False
+
         stat = self.api.client.get('status') if self.api else None
         return stat.connected if stat else False
 
     @property
     def operational(self) -> bool:
+        if not self.api.client.detected:
+            return False
+
         stat = self.api.client.get('status') if self.api else None
         return stat.operational if stat else False
 
     @property
     def why_not_operational(self) -> List[str]:
+        if not self.api.client:
+            return []
+
         ret: List[str] = []
         if not self.detected:
             ret.append('not detected')
         elif not self.connected:
             ret.append('not connected')
         elif not self.operational:
-            why = self.api.client.get('why_not_operational') if self.api.client else []
-            if why:
-                for reason in why:
-                    ret.append(reason)
+            if not self.api.client.detected:
+                ret.append(f"api client not detected")
+            else:
+                why = self.api.client.get('why_not_operational') if self.api.client else []
+                if why:
+                    for reason in why:
+                        ret.append(reason)
         return ret
 
     @property
@@ -131,24 +151,29 @@ class Unit(Component):
 
     def startup(self):
         self._was_shut_down = False
-        if self.api.client:
+        if self.api.client.detected:
             self.api.client.get('startup')
 
     def shutdown(self):
         self._was_shut_down = True
-        if self.api.client:
+        if self.api.client.detected:
             self.api.client.get('shutdown')
 
     @property
     def status(self) -> dict:
+        if not self.api.client.detected:
+            return {
+                'powered': self.powered,
+                'detected': False,
+            }
         return self.api.client.get('status') if self.api.client else None
 
     @property
     def name(self) -> str:
-        return self._name
+        return self.destination.hostname
 
     def abort(self):
-        if self.api.client:
+        if self.api.client.detected:
             self.api.client.get('abort')
 
 
@@ -210,17 +235,17 @@ class Scheduler:
 
         self._terminated = False
 
-        self.units: List[Unit | None] = [None] * Config.NUMBER_OF_UNITS
+        self.units: List[ControlledUnit] = []
         self.spec: Spec | None = None
 
-        def make_unit(slt: int):
+        def make_unit(name: str):
             interval = 25 + random.randint(0, 10)
-            unit_id = slt + 1
-            self.units[slt] = Unit(unit_id=unit_id)
-            while not self._terminated and not self.units[slt].api.client.detected:
+            unit = ControlledUnit(host=name)
+            self.units.append(unit)
+            while not self._terminated and not (unit.api.client and unit.api.client.detected):
                 time.sleep(interval)
-                self.units[slt] = Unit(unit_id=unit_id)
-            logger.info(f"made a Unit connection with '{self.units[slt].host}'")
+                unit.api.client.get('status')
+            logger.info(f"made a Unit connection with '{name}'")
 
         def make_spec():
             self.spec = Spec()
@@ -229,10 +254,10 @@ class Scheduler:
                 self.spec = Spec()
             logger.info(f"made a Spec connection with '{self.spec.host}'")
 
-        for slot in range(0, Config.NUMBER_OF_UNITS):
-            Thread(target=make_unit, args=[slot]).start()
+        for unit_name in Config().toml['units']['deployed']:
+            Thread(target=make_unit, args=[unit_name]).start()
 
-        Thread(target=make_spec).start()
+        # Thread(target=make_spec).start()
 
     def start_scheduling(self):
         self._terminated = False
