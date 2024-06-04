@@ -4,3 +4,31 @@
 [server]
     host = "0.0.0.0"
     port = 8002
+
+[units]
+    deployed = ['mastw']
+    planned = [
+        'mast01','mast02','mast03','mast04','mast05','mast06','mast07','mast08','mast09','mast10',
+        'mast11','mast12','mast13','mast14','mast15','mast16','mast17','mast18','mast19','mast20'
+    ]
+
+# Generic entry for a 'power-switch'
+[power-switch]
+    network = {host='', port=80}  # 'address' will be added per instance
+    userid = 'admin'
+    password = '1234'
+    timeout = 2
+    cycle_time = 3
+    delay_after_on = 3
+
+# Generic entry for a unit 'power-switch'
+[power-switch.unit]
+    outlets = {1="Mount", 2="Stage", 3="Camera", 4="Focuser", 5="Covers", 6="Computer", 7="Outlet 7", 8="Outlet 8"}
+
+#
+# Specific unit power-switches may override the generic unit entry
+# Example:
+#  The 'mastpsw' has the 'Computer' plugged into outlet #7 (instead of #6)
+#
+[power-switch.example]
+    outlets = {6="Outlet 6", 7="Computer"}
