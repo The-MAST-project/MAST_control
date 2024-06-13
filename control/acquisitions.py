@@ -1,4 +1,4 @@
-from planning.plans import Plan
+from planning.tasks import Task
 from common.utils import path_maker, Activities, RepeatTimer
 from enum import IntFlag, auto
 import logging
@@ -16,7 +16,7 @@ class Acquisition(Activities):
     An Acquisition starts AFTER the @plan was checked and found runnable
     """
 
-    def __init__(self, plan: Plan):
+    def __init__(self, plan: Task):
         Activities.__init__(self)
         self.folder = path_maker
         self._logger = logging.getLogger('acquisition')
