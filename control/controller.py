@@ -1,4 +1,5 @@
 import os.path
+import socket
 import time
 
 from common.utils import init_log, path_maker, BASE_CONTROL_PATH, Component, time_stamp
@@ -7,7 +8,7 @@ from common.config import Config
 from common.api import ApiUnit, ApiSpec
 from common.networking import NetworkedDevice
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
-from planning.plans import Plan
+from planning.tasks import Task
 import logging
 from typing import List
 from watchdog.events import FileSystemEvent
@@ -16,7 +17,7 @@ from threading import Lock, Thread
 from fastapi import APIRouter
 import random
 
-logger = logging.getLogger('scheduler')
+logger = logging.getLogger('controller')
 init_log(logger)
 
 
@@ -168,6 +169,14 @@ class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
             }
         return self.api.client.get('status') if self.api.client else None
 
+    def move_to_coordinates(self, ra: float, dec: float):
+        if self.api.client.detected:
+            self.api.client.get('move_to_coordinates', {'ra': ra, 'dec': dec})
+
+    def expose(self, seconds):
+        if self.api.client.detected:
+            self.api.client.get('expose', {'seconds': seconds})
+
     @property
     def name(self) -> str:
         return self.destination.hostname
@@ -177,7 +186,7 @@ class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
             self.api.client.get('abort')
 
 
-class Scheduler:
+class Controller:
     """
     The Scheduler:
     - on startup:
@@ -212,25 +221,25 @@ class Scheduler:
 
     def __init__(self):
 
-        plans_folder = path_maker.make_plans_folder()
-        self.pending_folder: str = os.path.join(plans_folder, 'pending')
-        self.completed_folder: str = os.path.join(plans_folder, 'completed')
+        tasks_folder = path_maker.make_tasks_folder()
+        self.pending_folder: str = os.path.join(tasks_folder, 'pending')
+        self.completed_folder: str = os.path.join(tasks_folder, 'completed')
 
-        self.plans: List[Plan] = []
+        self.tasks: List[Task] = []
         path = Path(self.pending_folder)
-        self.plans_lock = Lock()
+        self.tasks_lock = Lock()
         for file in [entry.name for entry in path.iterdir() if entry.is_file()]:
-            plan = Plan(file)
-            if plan.is_valid():
-                self.plans.append(plan)
+            task = Task(file)
+            if task.is_valid():
+                self.tasks.append(task)
 
-        with self.plans_lock:
-            self.plans.sort(key=lambda p: p.merit)
+        with self.tasks_lock:
+            self.tasks.sort(key=lambda p: p.merit)
 
-        self.plans_watcher = FsWatcher(folder=self.pending_folder, handlers={
-            'modified': self.on_modified_plan,
-            'deleted': self.on_deleted_plan,
-            'moved': self.on_moved_plan,
+        self.tasks_watcher = FsWatcher(folder=self.pending_folder, handlers={
+            'modified': self.on_modified_task,
+            'deleted': self.on_deleted_task,
+            'moved': self.on_moved_task,
         })
 
         self._terminated = False
@@ -254,51 +263,63 @@ class Scheduler:
                 self.spec = Spec()
             logger.info(f"made a Spec connection with '{self.spec.host}'")
 
-        for unit_name in Config().toml['units']['deployed']:
-            Thread(target=make_unit, args=[unit_name]).start()
+        current_site: str | None = None
+        aliases = socket.gethostbyaddr('127.0.0.1')[1]
+        for alias in aliases:
+            if alias.startswith('mast-') and alias.endswith(('-control')):
+                current_site = alias.replace('mast-', '')
+                current_site = current_site.replace('-control', '')
+                break
+        if not current_site:
+            raise Exception(f"could not get site name from {aliases=}")
 
-        # Thread(target=make_spec).start()
+        sites_conf = Config().get_sites()
+        for site in list(sites_conf.keys()):
+            if site == current_site:
+                for unit_name in sites_conf[current_site]['deployed']:
+                    Thread(target=make_unit, args=[unit_name]).start()
+                break
 
-    def start_scheduling(self):
+    def start_controlling(self):
         self._terminated = False
-        self.plans_watcher.run()
+        self.tasks_watcher.run()
 
-    def stop_scheduling(self):
+    def stop_controlling(self):
         self._terminated = True
-        self.plans_watcher.stop()
+        self.tasks_watcher.stop()
 
-    def on_modified_plan(self, event: FileSystemEvent):
+    def on_modified_task(self, event: FileSystemEvent):
         """
-        A plan was modified.  Load, verify and sort it in.
+        A task was modified.  Load, verify and sort it in.
         :return:
         """
 
-    def on_deleted_plan(self, event: FileSystemEvent):
+    def on_deleted_task(self, event: FileSystemEvent):
         """
-        A plan was deleted.  Delete it from the list
+        A task was deleted.  Delete it from the list
         """
-        with self.plans_lock:
-            for plan in self.plans:
-                if plan.path == event.src_path:
-                    if plan.in_progress:
+        with self.tasks_lock:
+            for task in self.tasks:
+                if task.path == event.src_path:
+                    if task.in_progress:
                         return
                     else:
-                        self.plans.remove(plan)
+                        self.tasks.remove(task)
                     return
 
-    def on_moved_plan(self, event: FileSystemEvent):
+    def on_moved_task(self, event: FileSystemEvent):
         """
-        A plan file was renamed
+        A task file was renamed
         """
-        found = [plan for plan in self.plans if plan.path == event.src_path]
+        found = [task for task in self.tasks if task.path == event.src_path]
         if found:
             found[0].path = event.dest_path
 
     def startup(self):
-        self.start_scheduling()
+        self.start_controlling()
 
     def shutdown(self):
-        self.stop_scheduling()
+        self.stop_controlling()
 
     def status(self) -> dict:
         not_detected = {
@@ -311,31 +332,61 @@ class Scheduler:
         }
 
 
-scheduler: Scheduler = Scheduler()
+controller: Controller = Controller()
 
 
 def startup():
-    global scheduler
+    global controller
 
-    if scheduler is None:
-        scheduler = Scheduler()
+    if controller is None:
+        controller = Controller()
 
 
 def shutdown():
-    global scheduler
+    global controller
 
-    scheduler.shutdown()
+    controller.shutdown()
+
+
+def config_get_sites_conf() -> dict:
+    return Config().get_sites()
+
+
+def config_get_users() -> List[str]:
+    return Config().get_users()
+
+
+def config_get_user(user_name: str) -> dict:
+    return Config().get_user(user_name)
+
+
+def config_get_unit(unit_name: str) -> dict:
+    ret = Config().get_unit(unit_name)
+    return ret
+
+
+def config_set_unit(unit_name: str, unit_conf: dict):
+    Config().set_unit(unit_name, unit_conf)
 
 
 base_path = BASE_CONTROL_PATH
 tag = 'Control'
 router = APIRouter()
 
-router.add_api_route(base_path + '/status', tags=[tag], endpoint=scheduler.status)
-router.add_api_route(base_path + '/startup', tags=[tag], endpoint=scheduler.startup)
-router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=scheduler.shutdown)
+router.add_api_route(base_path + '/status', tags=[tag], endpoint=controller.status)
+router.add_api_route(base_path + '/startup', tags=[tag], endpoint=controller.startup)
+router.add_api_route(base_path + '/shutdown', tags=[tag], endpoint=controller.shutdown)
+
+tag = 'Config'
+router.add_api_route(base_path + '/config/sites_conf', tags=[tag], endpoint=config_get_sites_conf)
+router.add_api_route(base_path + '/config/users', tags=[tag], endpoint=config_get_users)
+router.add_api_route(base_path + '/config/user', tags=[tag], endpoint=config_get_user)
+router.add_api_route(base_path + '/config/get_unit', tags=[tag], endpoint=config_get_unit)
+router.add_api_route(base_path + '/config/set_unit', tags=[tag], endpoint=config_set_unit)
+
+# router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
+# router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)
 
 
 if __name__ == '__main__':
-    scheduler = Scheduler()
-    scheduler.startup()
+    controller.startup()

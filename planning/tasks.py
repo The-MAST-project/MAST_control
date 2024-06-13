@@ -5,11 +5,10 @@ from typing import List
 from common.config import Config
 from common.utils import init_log
 
-logger = logging.getLogger('planning')
+logger = logging.getLogger('tasks')
 init_log(logger)
 
-
-class Plan:
+class Task:
     pass
 
     def __init__(self, path: str):
@@ -51,7 +50,7 @@ def parse_units(specifier: str | List[int] | List[str]) -> List[int]:
     return units
 
 
-def sort_by_merit(plans: List[Plan]) -> List[Plan]:
+def sort_by_merit(plans: List[Task]) -> List[Task]:
     """
     Calculate each plan's merit according to: coordinates -> elevation, air-mass, priority
     :return: A sorted list with the most meritous plan as first
