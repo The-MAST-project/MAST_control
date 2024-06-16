@@ -360,7 +360,7 @@ def config_get_user(user_name: str) -> dict:
     return Config().get_user(user_name)
 
 
-def config_get_unit(unit_name: str) -> dict:
+def config_get_unit(unit_name: str):
     ret = Config().get_unit(unit_name)
     return ret
 
