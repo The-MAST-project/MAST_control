@@ -2,9 +2,9 @@ import os.path
 import socket
 import time
 
-from common.utils import init_log, path_maker, BASE_CONTROL_PATH, Component, time_stamp
+from common.utils import init_log, path_maker, BASE_CONTROL_PATH, Component, time_stamp, mast_site_from_hostname
 from common.fswatcher import FsWatcher
-from common.config import Config
+from common.config import Config, WEIZMANN_DOMAIN
 from common.api import ApiUnit, ApiSpec
 from common.networking import NetworkedDevice
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
@@ -224,6 +224,8 @@ class Controller:
         tasks_folder = path_maker.make_tasks_folder()
         self.pending_folder: str = os.path.join(tasks_folder, 'pending')
         self.completed_folder: str = os.path.join(tasks_folder, 'completed')
+        os.makedirs(self.pending_folder, exist_ok=True)
+        os.makedirs(self.completed_folder, exist_ok=True)
 
         self.tasks: List[Task] = []
         path = Path(self.pending_folder)
@@ -263,16 +265,7 @@ class Controller:
                 self.spec = Spec()
             logger.info(f"made a Spec connection with '{self.spec.host}'")
 
-        current_site: str | None = None
-        aliases = socket.gethostbyaddr('127.0.0.1')[1]
-        for alias in aliases:
-            if alias.startswith('mast-') and alias.endswith(('-control')):
-                current_site = alias.replace('mast-', '')
-                current_site = current_site.replace('-control', '')
-                break
-        if not current_site:
-            raise Exception(f"could not get site name from {aliases=}")
-
+        current_site: str = mast_site_from_hostname()
         sites_conf = Config().get_sites()
         for site in list(sites_conf.keys()):
             if site == current_site:
@@ -326,8 +319,11 @@ class Controller:
             'detected': False,
         }
         time_stamp(not_detected)
+        spec_status = not_detected
+        if self.spec and self.spec.api and self.spec.api.client and self.spec.api.client.detected:
+            spec_status = {'detected': self.spec.api.client.detected}
         return {
-            'spec': self.spec.status if self.spec.api.client.detected else not_detected,
+            'spec': spec_status,
             'units': [{unit.name: unit.status if unit.api.client.detected else not_detected} for unit in self.units]
         }
 
