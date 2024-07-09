@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI
 from common.config import Config
-from control.controller import router as scheduler_router
+from control.controller import router as controller_router
 from control.controller import controller
 
 from fastapi.responses import ORJSONResponse
@@ -31,7 +31,7 @@ app.add_middleware(
 )
 
 
-app.include_router(scheduler_router)
+app.include_router(controller_router)
 
 
 if __name__ == '__main__':
