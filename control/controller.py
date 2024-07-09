@@ -91,7 +91,8 @@ class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
     def __init__(self, host: str):
         Component.__init__(self)
         NetworkedDevice.__init__(self, conf={'network': {'host': host}})
-        SwitchedPowerDevice.__init__(self, host=host.replace('mast', 'mastps'), outlet=6,
+        unit_conf = Config().get_unit(host)
+        SwitchedPowerDevice.__init__(self, unit_conf['power_switch'], outlet_name='Computer',
                                      upload_outlet_names=False)
         if not self.is_on():
             self.power_on()
@@ -267,9 +268,9 @@ class Controller:
 
         current_site: str = mast_site_from_hostname()
         sites_conf = Config().get_sites()
-        for site in list(sites_conf.keys()):
-            if site == current_site:
-                for unit_name in sites_conf[current_site]['deployed']:
+        for site in sites_conf:
+            if site['name'] == current_site:
+                for unit_name in site['deployed']:
                     Thread(target=make_unit, args=[unit_name]).start()
                 break
 
@@ -327,6 +328,28 @@ class Controller:
             'units': [{unit.name: unit.status if unit.api.client.detected else not_detected} for unit in self.units]
         }
 
+    def unit_minimal_status(self, unit_name: str) -> dict | None:
+        """
+        Returns a minimal status for the unit, including only 'powered' and 'detected'
+        Anyone wanting the whole status should ask the unit directly
+        :param unit_name:
+        :return:
+        """
+        for unit in self.units:
+            if unit.name == unit_name:
+                ret = {
+                    'powered': unit.is_on(),
+                    'detected': unit.api.client.detected
+                }
+                return ret
+        return None
+
+    def power_switch_status(self, unit_name) -> dict | None:
+        for unit in self.units:
+            if unit.name == unit_name:
+                return unit.switch.status()
+        return None
+
 
 controller: Controller = Controller()
 
@@ -344,7 +367,7 @@ def shutdown():
     controller.shutdown()
 
 
-def config_get_sites_conf() -> dict:
+def config_get_sites_conf() -> list:
     return Config().get_sites()
 
 
@@ -380,6 +403,8 @@ router.add_api_route(base_path + '/config/user', tags=[tag], endpoint=config_get
 router.add_api_route(base_path + '/config/get_unit', tags=[tag], endpoint=config_get_unit)
 router.add_api_route(base_path + '/config/set_unit', tags=[tag], endpoint=config_set_unit)
 
+router.add_api_route(base_path + '/unit/{unit_name}/minimal_status', tags=[tag], endpoint=controller.unit_minimal_status)
+router.add_api_route(base_path + '/unit/{unit_name}/power_switch_status', tags=[tag], endpoint=controller.power_switch_status)
 # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
 # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)
 
