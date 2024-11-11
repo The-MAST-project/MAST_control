@@ -2,13 +2,14 @@ import os.path
 import socket
 import time
 
+import tasks
 from common.utils import init_log, path_maker, BASE_CONTROL_PATH, Component, time_stamp, mast_site_from_hostname
 from common.fswatcher import FsWatcher
 from common.config import Config, WEIZMANN_DOMAIN
 from common.api import ApiUnit, ApiSpec
 from common.networking import NetworkedDevice
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
-from planning.tasks import Task
+from tasks.task import TaskModel
 import logging
 from typing import List
 from watchdog.events import FileSystemEvent
@@ -223,23 +224,25 @@ class Controller:
     def __init__(self):
 
         tasks_folder = path_maker.make_tasks_folder()
-        self.pending_folder: str = os.path.join(tasks_folder, 'pending')
-        self.completed_folder: str = os.path.join(tasks_folder, 'completed')
-        os.makedirs(self.pending_folder, exist_ok=True)
-        os.makedirs(self.completed_folder, exist_ok=True)
+        self.folders = {
+            'pending': os.path.join(tasks_folder, 'pending'),
+            'completed': os.path.join(tasks_folder, 'completed'),
+            'in-progress': os.path.join(tasks_folder, 'in-progress'),
+        }
+        for folder in self.folders.values():
+            os.makedirs(folder, exist_ok=True)
 
-        self.tasks: List[Task] = []
-        path = Path(self.pending_folder)
+        self.tasks: dict = {
+            'pending': tasks.load_folder(self.folders['pending']),
+            'completed': tasks.load_folder(self.folders['completed']),
+            'in-progress': tasks.load_folder(self.folders['in-progress']),
+        }
+
         self.tasks_lock = Lock()
-        for file in [entry.name for entry in path.iterdir() if entry.is_file()]:
-            task = Task(file)
-            if task.is_valid():
-                self.tasks.append(task)
+        # with self.tasks_lock:
+        #     self.tasks.sort(key=lambda p: p.merit)
 
-        with self.tasks_lock:
-            self.tasks.sort(key=lambda p: p.merit)
-
-        self.tasks_watcher = FsWatcher(folder=self.pending_folder, handlers={
+        self.tasks_watcher = FsWatcher(folder=self.folders['pending'], handlers={
             'modified': self.on_modified_task,
             'deleted': self.on_deleted_task,
             'moved': self.on_moved_task,
@@ -337,9 +340,11 @@ class Controller:
         """
         for unit in self.units:
             if unit.name == unit_name:
+                detected = unit.api.client.detected
                 ret = {
-                    'powered': unit.is_on(),
-                    'detected': unit.api.client.detected
+                    'type': 'short',
+                    'powered': unit.powered,
+                    'detected': detected
                 }
                 return ret
         return None
@@ -349,6 +354,18 @@ class Controller:
             if unit.name == unit_name:
                 return unit.switch.status()
         return None
+
+    def set_outlet(self, unit_name, outlet: int | str, state: bool):
+        if isinstance(outlet, str):
+            outlet = int(outlet)
+        logger.info(f"set_outlet: {unit_name=}, {outlet=}, {state=}")
+        for unit in self.units:
+            if unit.name == unit_name:
+                if state:
+                    unit.switch.on(outlet=outlet-1)
+                else:
+                    unit.switch.off(outlet=outlet-1)
+                return
 
 
 controller: Controller = Controller()
@@ -400,11 +417,12 @@ tag = 'Config'
 router.add_api_route(base_path + '/config/sites_conf', tags=[tag], endpoint=config_get_sites_conf)
 router.add_api_route(base_path + '/config/users', tags=[tag], endpoint=config_get_users)
 router.add_api_route(base_path + '/config/user', tags=[tag], endpoint=config_get_user)
-router.add_api_route(base_path + '/config/get_unit', tags=[tag], endpoint=config_get_unit)
-router.add_api_route(base_path + '/config/set_unit', tags=[tag], endpoint=config_set_unit)
+router.add_api_route(base_path + '/config/get_unit/{unit_name}', tags=[tag], endpoint=config_get_unit)
+router.add_api_route(base_path + '/config/set_unit/{unit_name}', tags=[tag], endpoint=config_set_unit)
 
 router.add_api_route(base_path + '/unit/{unit_name}/minimal_status', tags=[tag], endpoint=controller.unit_minimal_status)
-router.add_api_route(base_path + '/unit/{unit_name}/power_switch_status', tags=[tag], endpoint=controller.power_switch_status)
+router.add_api_route(base_path + '/unit/{unit_name}/power_switch/status', tags=[tag], endpoint=controller.power_switch_status)
+router.add_api_route(base_path + '/unit/{unit_name}/power_switch/outlet', tags=[tag], endpoint=controller.set_outlet)
 # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
 # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)
 
