@@ -1,7 +1,7 @@
 annotated-types
 anyio
 astropy
-astropy-iers-data 
+astropy-iers-data
 beautifulsoup4
 bs4
 certifi
@@ -54,3 +54,5 @@ uvicorn
 watchdog
 watchfiles
 websockets
+python-ulid
+python-ulid[pydantic]
