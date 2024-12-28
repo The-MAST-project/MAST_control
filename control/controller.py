@@ -1,19 +1,16 @@
-import os.path
-import socket
 import time
-
-import tasks
-from common.utils import init_log, path_maker, BASE_CONTROL_PATH, Component, time_stamp, mast_site_from_hostname
+import socket
+from common import targets
+from common.utils import BASE_CONTROL_PATH, Component, time_stamp
+from common.mast_logging import init_log
 from common.fswatcher import FsWatcher
-from common.config import Config, WEIZMANN_DOMAIN
+from common.config import Config
 from common.api import ApiUnit, ApiSpec
 from common.networking import NetworkedDevice
 from dlipower.dlipower.dlipower import SwitchedPowerDevice
-from tasks.task import TaskModel
 import logging
-from typing import List
+from typing import List, Optional, Literal, Union, Dict
 from watchdog.events import FileSystemEvent
-from pathlib import Path
 from threading import Lock, Thread
 from fastapi import APIRouter
 import random
@@ -101,8 +98,8 @@ class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
         self.powered = self.is_on()
         self._was_shut_down = False
         # ApiUnit calls the remote 'status'
-        logger.info(f"trying to make an ApiUnit(host='{self.destination.hostname}') connection ...")
-        self.api = ApiUnit(self.destination.hostname)
+        logger.info(f"trying to make an ApiUnit(host='{self.network.hostname}') connection ...")
+        self.api = ApiUnit(self.network.hostname)
 
     @property
     def detected(self) -> bool:
@@ -181,7 +178,7 @@ class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
 
     @property
     def name(self) -> str:
-        return self.destination.hostname
+        return self.network.hostname
 
     def abort(self):
         if self.api.client.detected:
@@ -219,30 +216,23 @@ class Controller:
 
     @property
     def name(self) -> str:
-        return 'spec'
+        return socket.gethostname()
 
     def __init__(self):
 
-        tasks_folder = path_maker.make_tasks_folder()
-        self.folders = {
-            'pending': os.path.join(tasks_folder, 'pending'),
-            'completed': os.path.join(tasks_folder, 'completed'),
-            'in-progress': os.path.join(tasks_folder, 'in-progress'),
-        }
-        for folder in self.folders.values():
-            os.makedirs(folder, exist_ok=True)
-
-        self.tasks: dict = {
-            'pending': tasks.load_folder(self.folders['pending']),
-            'completed': tasks.load_folder(self.folders['completed']),
-            'in-progress': tasks.load_folder(self.folders['in-progress']),
-        }
+        self.tasks: dict = {}
+        for key in targets.folders.keys():
+            try:
+                self.tasks[key] = targets.load_folder(key)
+                logger.info(f"loaded {len(self.tasks[key])} targets from '{targets.folders[key]}'")
+            except Exception as e:
+                logger.error(f"failed to load {targets.folders[key]}: {e}")
 
         self.tasks_lock = Lock()
         # with self.tasks_lock:
-        #     self.tasks.sort(key=lambda p: p.merit)
+        #     self.targets.sort(key=lambda p: p.merit)
 
-        self.tasks_watcher = FsWatcher(folder=self.folders['pending'], handlers={
+        self.tasks_watcher = FsWatcher(folder=targets.folders['pending'], handlers={
             'modified': self.on_modified_task,
             'deleted': self.on_deleted_task,
             'moved': self.on_moved_task,
@@ -262,17 +252,9 @@ class Controller:
                 unit.api.client.get('status')
             logger.info(f"made a Unit connection with '{name}'")
 
-        def make_spec():
-            self.spec = Spec()
-            while not self._terminated and not self.spec.api.client.detected:
-                time.sleep(30)
-                self.spec = Spec()
-            logger.info(f"made a Spec connection with '{self.spec.host}'")
-
-        current_site: str = mast_site_from_hostname()
         sites_conf = Config().get_sites()
         for site in sites_conf:
-            if site['name'] == current_site:
+            if hasattr(site, 'local') and site.local == True:
                 for unit_name in site['deployed']:
                     Thread(target=make_unit, args=[unit_name]).start()
                 break
@@ -355,18 +337,47 @@ class Controller:
                 return unit.switch.status()
         return None
 
-    def set_outlet(self, unit_name, outlet: int | str, state: bool):
+    def set_outlet(self, unit_name, outlet: int | str, state: Literal['on', 'off', 'toggle']):
         if isinstance(outlet, str):
             outlet = int(outlet)
         logger.info(f"set_outlet: {unit_name=}, {outlet=}, {state=}")
         for unit in self.units:
             if unit.name == unit_name:
-                if state:
+                if state == 'on':
                     unit.switch.on(outlet=outlet-1)
-                else:
+                elif state == 'off':
                     unit.switch.off(outlet=outlet-1)
+                elif state == 'toggle':
+                    unit.switch.toggle(outlet=outlet-1)
                 return
 
+
+    def get_tasks(self,
+                  kind: Literal['pending', 'in-progress', 'completed', 'all'] = 'pending',
+                  ulid: Optional[str] = None,
+                  name: Optional[str] = None) -> Union[Dict, List]:
+        """
+        Get either a specific (by name or by ulid) pending task, or all of them
+
+        :param kind: what kind of targets
+        :param ulid: optional ULID
+        :param name: optional name
+        :return: one or more targets, of the specified kind
+        """
+        if kind == 'all':
+            return {
+                'maintainer': self.name,
+                'pending': [t.to_dict() for t in self.tasks['pending']],
+                'inprogress': [t.to_dict() for t in self.tasks['in-progress']],
+                'completed': [t.to_dict() for t in self.tasks['completed']],
+            }
+
+        if ulid:
+            return [t.to_dict() for t in self.tasks[kind] if t.ulid == ulid]
+        elif name:
+            return [t.to_dict() for t in self.tasks[kind] if t.name == name]
+
+        return [t.to_dict() for t in self.tasks[kind]]
 
 controller: Controller = Controller()
 
@@ -384,7 +395,7 @@ def shutdown():
     controller.shutdown()
 
 
-def config_get_sites_conf() -> list:
+def config_get_sites_conf() -> dict:
     return Config().get_sites()
 
 
@@ -404,6 +415,8 @@ def config_get_unit(unit_name: str):
 def config_set_unit(unit_name: str, unit_conf: dict):
     Config().set_unit(unit_name, unit_conf)
 
+def config_get_thar_filters():
+    return Config().get_specs()['wheels']['ThAr']['filters']
 
 base_path = BASE_CONTROL_PATH
 tag = 'Control'
@@ -419,12 +432,15 @@ router.add_api_route(base_path + '/config/users', tags=[tag], endpoint=config_ge
 router.add_api_route(base_path + '/config/user', tags=[tag], endpoint=config_get_user)
 router.add_api_route(base_path + '/config/get_unit/{unit_name}', tags=[tag], endpoint=config_get_unit)
 router.add_api_route(base_path + '/config/set_unit/{unit_name}', tags=[tag], endpoint=config_set_unit)
+router.add_api_route(base_path + '/config/get_thar_filters', tags=[tag], endpoint=config_get_thar_filters)
 
 router.add_api_route(base_path + '/unit/{unit_name}/minimal_status', tags=[tag], endpoint=controller.unit_minimal_status)
 router.add_api_route(base_path + '/unit/{unit_name}/power_switch/status', tags=[tag], endpoint=controller.power_switch_status)
 router.add_api_route(base_path + '/unit/{unit_name}/power_switch/outlet', tags=[tag], endpoint=controller.set_outlet)
 # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
 # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)
+
+router.add_api_route(base_path + '/targets', tags=[tag], endpoint=controller.get_tasks)
 
 
 if __name__ == '__main__':
