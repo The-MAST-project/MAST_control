@@ -1,0 +1,12 @@
+[Unit]
+Description=MAST HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/Storage/mast-share/MAST
+ExecStart=/usr/bin/python3 -m http.server 8000
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
