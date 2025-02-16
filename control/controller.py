@@ -1,23 +1,154 @@
+import os
 import time
 import socket
-from common import targets
-from common.utils import BASE_CONTROL_PATH, Component, time_stamp
+
+from fastapi.exceptions import ValidationException
+from common.utils import BASE_CONTROL_PATH, Component, time_stamp, CanonicalResponse, CanonicalResponse_Ok
+from common.utils import function_name
 from common.mast_logging import init_log
 from common.fswatcher import FsWatcher
 from common.config import Config
-from common.api import ApiUnit, ApiSpec
+from common.api import UnitApi, SpecApi
 from common.networking import NetworkedDevice
-from dlipower.dlipower.dlipower import SwitchedPowerDevice
+from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 import logging
-from typing import List, Optional, Literal, Union, Dict
+from typing import List, Optional, Literal, Dict
 from watchdog.events import FileSystemEvent
 from threading import Lock, Thread
 from fastapi import APIRouter
 import random
+from common.tasks.models import AssignedTaskModel, TaskProduct
+from common.paths import PathMaker
+import asyncio
+from pathlib import Path
 
 logger = logging.getLogger('controller')
 init_log(logger)
 
+
+class TasksContainer:
+    """
+    Manages task files in a given folder.
+    - if the folder does not exist, it is created
+    - all the files named 'TSK_...toml' in the folder are loaded into the provided list of tasks
+    - watchers are set up to handle:
+      - file creation: the task is loaded and added to the list
+      - file deletion: the folder is scanned to figure out which ULID was deleted.  the respective task gets deleted from the list
+      - file modification: we load the task and update the respective element in the list (by ULID)
+    """
+
+    TASK_PATH_PATTERN = "*/TSK_*.toml"
+
+    def __init__(self, folder_name: str):
+
+        self.folder_name = folder_name
+        self.path = Path(PathMaker.make_tasks_folder()) / self.folder_name
+        try:
+            self.path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.error(f"could not create '{self.path}' (error: {e})")
+            raise
+
+        self.lock = Lock()
+
+        directory = Path(self.path)
+        with self.lock:
+            task_files = directory.glob('TSK_*.toml')
+            self.tasks = []
+            for task_file in task_files:
+                try:
+                    task = AssignedTaskModel.from_toml_file(task_file)
+                except Exception as e:
+                    logger.error(f"could not load task from {task_file}, error: {e}")
+                    continue
+                self.tasks.append(task)
+            if len(self.tasks) > 0:
+                logger.info(f"loaded {len(self.tasks)} tasks from '{self.folder_name}'")
+
+        self.watcher: FsWatcher = FsWatcher(folder=str(self.path), handlers= {
+            'created': self.on_created,
+            'modified': self.on_modified,
+            'deleted': self.on_deleted,
+        })
+        Thread(target=self.watcher.run, name=f"task-{self.folder_name}-thread").start()
+
+    def on_created(self, event: FileSystemEvent):
+        """
+        A new file just materialized, add the task to the list
+        :param event:
+        :return:
+        """
+        path = Path(event.src_path)
+        if not path.match(TasksContainer.TASK_PATH_PATTERN):
+            return
+        try:
+            new_task = AssignedTaskModel.from_toml_file(str(path))
+        except Exception as e:
+            logger.error(f"could not load an AssignedTaskModel from '{str(path)}', error: {e}")
+            return
+
+        # check for duplicates
+        with self.lock:
+            for task in self.tasks:
+                if task.task.ulid == new_task.task.ulid:
+                    logger.error(f"duplicate task ulid ({task.task.ulid}) in {new_task.task.file} and {task.task.file}")
+                    return
+            # add it
+            self.tasks.append(new_task)
+            logger.info(f"task '{new_task.task.ulid}' created in '{str(path)}'")
+
+    def on_modified(self, event: FileSystemEvent):
+        """
+        A task file was modified, update the list member with the same ulid with the new data
+        :param event:
+        :return:
+        """
+        path = Path(event.src_path)
+        if not path.match(TasksContainer.TASK_PATH_PATTERN):
+            return
+
+        try:
+            modified_task = AssignedTaskModel.from_toml_file(str(path))
+        except Exception as e:
+            logger.error(f"could not load updated task from '{str(path)}', error: {e}")
+            return
+
+        with self.lock:
+            for task in self.tasks:
+                if task.task.ulid == modified_task.task.ulid:
+                    self.tasks.remove(task)
+                    self.tasks.append(modified_task)
+                    logger.info(f"task '{modified_task.task.ulid}' modified in '{str(path)}'")
+
+    def on_deleted(self, event: FileSystemEvent):
+        """
+        A task file was deleted, scan the folder and find out which ULID was deleted
+        :param event:
+        :return:
+        """
+        path = Path(event.src_path)
+        if not path.match(TasksContainer.TASK_PATH_PATTERN):
+            return
+
+        with self.lock:
+            previous_ulids: List[str] = [t.task.ulid for t in self.tasks]
+            current_task_files = Path(self.path).glob('TSK_*.toml')
+            current_tasks: List[AssignedTaskModel] = []
+            for file in current_task_files:
+                try:
+                    task = AssignedTaskModel.from_toml_file(file)
+                    current_tasks.append(task)
+                except ValidationException as e:
+                    logger.error(f"could not load an AssignedTaskModel from '{file}' (error: {e})")
+                    continue
+
+            current_ulids = [t.task.ulid for t in current_tasks]
+            deleted_ulids = [u for u in previous_ulids if u not in current_ulids]
+            for deleted_ulid in deleted_ulids:  # more than one may have been deleted
+                deleted_task = [t for t in self.tasks if t.task.ulid == deleted_ulid]
+                if len(deleted_task) == 1:
+                    self.tasks.remove(deleted_task[0])
+                    logger.info(f"task '{deleted_ulid}' was deleted from '{self.path}'")
 
 class Spec(Component):
 
@@ -38,7 +169,7 @@ class Spec(Component):
         Component.__init__(self)
         self.host = 'spec'
         logger.info(f"trying to make a Spec() connection with host='{self.host}' ...")
-        self.api = ApiSpec()
+        self.api = SpecApi()
         self._was_shut_down = False
 
     @property
@@ -85,13 +216,11 @@ class Spec(Component):
             self.api.client.get('shutdown')
 
 
-class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
+class ControlledUnit(Component, SwitchedOutlet, NetworkedDevice):
     def __init__(self, host: str):
         Component.__init__(self)
         NetworkedDevice.__init__(self, conf={'network': {'host': host}})
-        unit_conf = Config().get_unit(host)
-        SwitchedPowerDevice.__init__(self, unit_conf['power_switch'], outlet_name='Computer',
-                                     upload_outlet_names=False)
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Computer')
         if not self.is_on():
             self.power_on()
             # TODO: wait till the unit computer boots
@@ -99,47 +228,35 @@ class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
         self._was_shut_down = False
         # ApiUnit calls the remote 'status'
         logger.info(f"trying to make an ApiUnit(host='{self.network.hostname}') connection ...")
-        self.api = ApiUnit(self.network.hostname)
+        self.api = UnitApi(self.network.hostname)
 
     @property
-    def detected(self) -> bool:
-        if not self.api.client:
-            return False
-
-        st = self.api.client.get('status') if self.api else None
-        return st.detected if st else False
+    async def detected(self) -> bool:
+        stat = await self.api.get('status') if self.api else None
+        return stat.detected if stat else False
 
     @property
-    def connected(self) -> bool:
-        if not self.api.client:
-            return False
-
-        stat = self.api.client.get('status') if self.api else None
+    async def connected(self) -> bool:
+        stat = await self.api.get('status') if self.api else None
         return stat.connected if stat else False
 
     @property
-    def operational(self) -> bool:
-        if not self.api.client.detected:
-            return False
-
-        stat = self.api.client.get('status') if self.api else None
+    async def operational(self) -> bool:
+        stat = await self.api.get('status') if self.api else None
         return stat.operational if stat else False
 
     @property
-    def why_not_operational(self) -> List[str]:
-        if not self.api.client:
-            return []
-
+    async def why_not_operational(self) -> List[str]:
         ret: List[str] = []
         if not self.detected:
             ret.append('not detected')
         elif not self.connected:
             ret.append('not connected')
         elif not self.operational:
-            if not self.api.client.detected:
+            if not self.detected:
                 ret.append(f"api client not detected")
             else:
-                why = self.api.client.get('why_not_operational') if self.api.client else []
+                why: List[str] | None  = await self.api.get('why_not_operational')
                 if why:
                     for reason in why:
                         ret.append(reason)
@@ -149,41 +266,35 @@ class ControlledUnit(Component, SwitchedPowerDevice, NetworkedDevice):
     def was_shut_down(self) -> bool:
         return self._was_shut_down
 
-    def startup(self):
+    async def startup(self):
         self._was_shut_down = False
-        if self.api.client.detected:
-            self.api.client.get('startup')
+        return await self.api.get('startup')
 
-    def shutdown(self):
+    async def shutdown(self):
         self._was_shut_down = True
-        if self.api.client.detected:
-            self.api.client.get('shutdown')
+        return await self.api.get('shutdown')
 
     @property
-    def status(self) -> dict:
-        if not self.api.client.detected:
+    async def status(self) -> dict:
+        if not self.detected:
             return {
                 'powered': self.powered,
                 'detected': False,
             }
-        return self.api.client.get('status') if self.api.client else None
+        return await self.api.get('status')
 
-    def move_to_coordinates(self, ra: float, dec: float):
-        if self.api.client.detected:
-            self.api.client.get('move_to_coordinates', {'ra': ra, 'dec': dec})
+    async def move_to_coordinates(self, ra: float, dec: float):
+        return await self.api.get('move_to_coordinates', {'ra': ra, 'dec': dec})
 
-    def expose(self, seconds):
-        if self.api.client.detected:
-            self.api.client.get('expose', {'seconds': seconds})
+    async def expose(self, seconds):
+        return await self.api.get('expose', {'seconds': seconds})
 
     @property
     def name(self) -> str:
         return self.network.hostname
 
-    def abort(self):
-        if self.api.client.detected:
-            self.api.client.get('abort')
-
+    async def abort(self):
+        return await self.api.get('abort')
 
 class Controller:
     """
@@ -220,23 +331,21 @@ class Controller:
 
     def __init__(self):
 
-        self.tasks: dict = {}
-        for key in targets.folders.keys():
-            try:
-                self.tasks[key] = targets.load_folder(key)
-                logger.info(f"loaded {len(self.tasks[key])} targets from '{targets.folders[key]}'")
-            except Exception as e:
-                logger.error(f"failed to load {targets.folders[key]}: {e}")
+        # assigned_tasks_top = os.path.join(PathMaker().make_tasks_folder(), 'assigned')
+        # self.assigned_tasks = common.tasks.load_assigned()
+        # logger.info(f"loaded {len(self.assigned_tasks)} assigned tasks from '{assigned_tasks_top}'")
 
-        self.tasks_lock = Lock()
-        # with self.tasks_lock:
-        #     self.targets.sort(key=lambda p: p.merit)
-
-        self.tasks_watcher = FsWatcher(folder=targets.folders['pending'], handlers={
-            'modified': self.on_modified_task,
-            'deleted': self.on_deleted_task,
-            'moved': self.on_moved_task,
-        })
+        self.pending_tasks_container = TasksContainer(folder_name='pending')
+        self.assigned_tasks_container = TasksContainer(folder_name='assigned')
+        self.failed_tasks_container = TasksContainer(folder_name='failed')
+        self.completed_task_container = TasksContainer(folder_name='completed')
+        self.in_progress_task_container = TasksContainer(folder_name='in-progress')
+        self.task_containers = [
+            self.pending_tasks_container,
+            self.assigned_tasks_container,
+            self.failed_tasks_container,
+            self.in_progress_task_container,
+            ]
 
         self._terminated = False
 
@@ -247,9 +356,9 @@ class Controller:
             interval = 25 + random.randint(0, 10)
             unit = ControlledUnit(host=name)
             self.units.append(unit)
-            while not self._terminated and not (unit.api.client and unit.api.client.detected):
+            while not self._terminated and not unit.api.detected:
                 time.sleep(interval)
-                unit.api.client.get('status')
+                unit.api.get('status')
             logger.info(f"made a Unit connection with '{name}'")
 
         sites_conf = Config().get_sites()
@@ -261,38 +370,13 @@ class Controller:
 
     def start_controlling(self):
         self._terminated = False
-        self.tasks_watcher.run()
+        for container in self.task_containers:
+            Thread(name=f"tasks-watcher-{container.folder_name}",target=container.watcher.run).start()
 
     def stop_controlling(self):
         self._terminated = True
-        self.tasks_watcher.stop()
-
-    def on_modified_task(self, event: FileSystemEvent):
-        """
-        A task was modified.  Load, verify and sort it in.
-        :return:
-        """
-
-    def on_deleted_task(self, event: FileSystemEvent):
-        """
-        A task was deleted.  Delete it from the list
-        """
-        with self.tasks_lock:
-            for task in self.tasks:
-                if task.path == event.src_path:
-                    if task.in_progress:
-                        return
-                    else:
-                        self.tasks.remove(task)
-                    return
-
-    def on_moved_task(self, event: FileSystemEvent):
-        """
-        A task file was renamed
-        """
-        found = [task for task in self.tasks if task.path == event.src_path]
-        if found:
-            found[0].path = event.dest_path
+        for container in self.task_containers:
+            container.watcher.stop()
 
     def startup(self):
         self.start_controlling()
@@ -310,7 +394,7 @@ class Controller:
             spec_status = {'detected': self.spec.api.client.detected}
         return {
             'spec': spec_status,
-            'units': [{unit.name: unit.status if unit.api.client.detected else not_detected} for unit in self.units]
+            'units': [{unit.name: unit.status if unit.api.detected else not_detected} for unit in self.units]
         }
 
     def unit_minimal_status(self, unit_name: str) -> dict | None:
@@ -322,7 +406,7 @@ class Controller:
         """
         for unit in self.units:
             if unit.name == unit_name:
-                detected = unit.api.client.detected
+                detected = unit.api.detected
                 ret = {
                     'type': 'short',
                     'powered': unit.powered,
@@ -334,7 +418,7 @@ class Controller:
     def power_switch_status(self, unit_name) -> dict | None:
         for unit in self.units:
             if unit.name == unit_name:
-                return unit.switch.status()
+                return unit.power_switch.status()
         return None
 
     def set_outlet(self, unit_name, outlet: int | str, state: Literal['on', 'off', 'toggle']):
@@ -344,40 +428,56 @@ class Controller:
         for unit in self.units:
             if unit.name == unit_name:
                 if state == 'on':
-                    unit.switch.on(outlet=outlet-1)
+                    unit.power_switch.on(outlet=outlet-1)
                 elif state == 'off':
-                    unit.switch.off(outlet=outlet-1)
+                    unit.power_switch.off(outlet=outlet-1)
                 elif state == 'toggle':
-                    unit.switch.toggle(outlet=outlet-1)
+                    unit.power_switch.toggle(outlet=outlet-1)
                 return
 
 
-    def get_tasks(self,
-                  kind: Literal['pending', 'in-progress', 'completed', 'all'] = 'pending',
+    def get_assigned_tasks(self,
                   ulid: Optional[str] = None,
-                  name: Optional[str] = None) -> Union[Dict, List]:
+                  name: Optional[str] = None) -> List[Dict]:
         """
         Get either a specific (by name or by ulid) pending task, or all of them
 
-        :param kind: what kind of targets
         :param ulid: optional ULID
         :param name: optional name
         :return: one or more targets, of the specified kind
         """
-        if kind == 'all':
-            return {
-                'maintainer': self.name,
-                'pending': [t.to_dict() for t in self.tasks['pending']],
-                'inprogress': [t.to_dict() for t in self.tasks['in-progress']],
-                'completed': [t.to_dict() for t in self.tasks['completed']],
-            }
-
         if ulid:
-            return [t.to_dict() for t in self.tasks[kind] if t.ulid == ulid]
+            return [t.model_dump() for t in self.assigned_tasks_container.tasks if t.task.ulid == ulid]
         elif name:
-            return [t.to_dict() for t in self.tasks[kind] if t.name == name]
+            return [t.model_dump() for t in self.assigned_tasks_container.tasks if t.task.name == name]
+        else:
+            return [t.model_dump() for t in self.assigned_tasks_container.tasks]
 
-        return [t.to_dict() for t in self.tasks[kind]]
+    async def execute_assigned_task(self, ulid: str) -> CanonicalResponse:
+        matching_tasks = [t for t in self.assigned_tasks_container.tasks if t.task.ulid == ulid]
+        if len(matching_tasks) == 0:
+            return CanonicalResponse(errors=[f"no matching task for {ulid=}"])
+        task = matching_tasks[0]
+        task.task.run_folder = PathMaker.make_run_folder()
+        os.makedirs(task.task.run_folder, exist_ok=True)
+        os.link(task.task.file, os.path.join(task.task.run_folder, 'task'))
+        asyncio.create_task(task.execute())
+        return CanonicalResponse_Ok
+
+    async def task_product(self, product: TaskProduct):
+        task = [t for t in self.assigned_tasks_container.tasks if t.task.ulid == product.ulid]
+        if len(task) == 0:
+            logger.error(f"could not find task '{product.ulid}' in self.assigned_tasks_container.tasks")
+            return
+        task = task[0]
+        src = product.path
+        dst = os.path.join(task.task.run_folder, product.unit, product.type)
+        try:
+            os.symlink(src, dst)
+            logger.info(f"task_product: created symlink '{src}' -> '{dst}'")
+        except Exception as e:
+            logger.error(f"task_product: failed to symlink '{src}' -> '{dst}' (error: {e})")
+
 
 controller: Controller = Controller()
 
@@ -440,7 +540,9 @@ router.add_api_route(base_path + '/unit/{unit_name}/power_switch/outlet', tags=[
 # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
 # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)
 
-router.add_api_route(base_path + '/targets', tags=[tag], endpoint=controller.get_tasks)
+router.add_api_route(base_path + '/get_assigned_tasks', tags=[tag], endpoint=controller.get_assigned_tasks)
+router.add_api_route(base_path + '/execute_assigned_task', tags=[tag], endpoint=controller.execute_assigned_task)
+router.add_api_route(base_path + '/task_product', tags=[tag], endpoint=controller.task_product)
 
 
 if __name__ == '__main__':
