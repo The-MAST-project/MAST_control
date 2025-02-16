@@ -4,7 +4,7 @@ from common.config import Config
 from control.controller import router as controller_router
 from control.controller import controller
 
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import ORJSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
@@ -33,6 +33,9 @@ app.add_middleware(
 
 app.include_router(controller_router)
 
+@app.get("/favicon.ico")
+def read_favicon():
+    return RedirectResponse(url="/static/favicon.ico")
 
 if __name__ == '__main__':
     cfg = Config()
