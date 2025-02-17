@@ -464,19 +464,28 @@ class Controller:
         asyncio.create_task(task.execute())
         return CanonicalResponse_Ok
 
-    async def task_product(self, product: TaskProduct):
-        task = [t for t in self.assigned_tasks_container.tasks if t.task.ulid == product.ulid]
-        if len(task) == 0:
-            logger.error(f"could not find task '{product.ulid}' in self.assigned_tasks_container.tasks")
+    async def task_product_notification(self, product: TaskProduct):
+        """
+        Receives locations of products related to a running task:
+        - from units: type: 'autofocus' or 'acquisition'
+        - from spec: type: 'spec', folder containing the spec's acquisition
+        :param product:
+        :return:
+        """
+        op = function_name()
+
+        matches = [t for t in self.assigned_tasks_container.tasks if t.task.ulid == product.ulid]
+        if len(matches) == 0:
+            logger.error(f"{op}: could not find task '{product.ulid}' in self.assigned_tasks_container.tasks")
             return
-        task = task[0]
+        task = matches[0]
         src = product.path
         dst = os.path.join(task.task.run_folder, product.unit, product.type)
         try:
             os.symlink(src, dst)
-            logger.info(f"task_product: created symlink '{src}' -> '{dst}'")
+            logger.info(f"{op}: created symlink '{src}' -> '{dst}'")
         except Exception as e:
-            logger.error(f"task_product: failed to symlink '{src}' -> '{dst}' (error: {e})")
+            logger.error(f"{op}: failed to symlink '{src}' -> '{dst}' (error: {e})")
 
 
 controller: Controller = Controller()
@@ -542,7 +551,7 @@ router.add_api_route(base_path + '/unit/{unit_name}/power_switch/outlet', tags=[
 
 router.add_api_route(base_path + '/get_assigned_tasks', tags=[tag], endpoint=controller.get_assigned_tasks)
 router.add_api_route(base_path + '/execute_assigned_task', tags=[tag], endpoint=controller.execute_assigned_task)
-router.add_api_route(base_path + '/task_product', tags=[tag], endpoint=controller.task_product)
+router.add_api_route(base_path + '/task_product_notification', tags=[tag], endpoint=controller.task_product_notification)
 
 
 if __name__ == '__main__':
