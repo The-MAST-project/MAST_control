@@ -17,7 +17,7 @@ from watchdog.events import FileSystemEvent
 from threading import Lock, Thread
 from fastapi import APIRouter
 import random
-from common.tasks.models import AssignedTaskModel, TaskNotification
+from common.tasks.models import AssignedTaskModel, TaskAcquisitionPathNotification
 from common.paths import PathMaker
 import asyncio
 from pathlib import Path
@@ -346,6 +346,7 @@ class Controller:
             self.failed_tasks_container,
             self.in_progress_task_container,
             ]
+        self.task_in_progress: Optional[AssignedTaskModel] = None
 
         self._terminated = False
 
@@ -461,26 +462,26 @@ class Controller:
         task.task.run_folder = PathMaker.make_run_folder()
         os.makedirs(task.task.run_folder, exist_ok=True)
         os.link(task.task.file, os.path.join(task.task.run_folder, 'task'))
+        self.task_in_progress = task
         asyncio.create_task(task.execute())
         return CanonicalResponse_Ok
 
-    async def task_product_notification(self, product: TaskNotification):
+    async def task_acquisition_path_notification(self, notification: TaskAcquisitionPathNotification):
         """
         Receives locations of products related to a running task:
         - from units: type: 'autofocus' or 'acquisition'
         - from spec: type: 'spec', folder containing the spec's acquisition
-        :param product:
+        :param notification:
         :return:
         """
         op = function_name()
 
-        matches = [t for t in self.assigned_tasks_container.tasks if t.task.ulid == product.ulid]
-        if len(matches) == 0:
-            logger.error(f"{op}: could not find task '{product.ulid}' in self.assigned_tasks_container.tasks")
+        if notification.task_id != self.task_in_progress.task.ulid:
+            logger.error(f"ignored notification for task '{notification.task_id}' (task in progress '{self.task_in_progress.task.ulid}")
             return
-        task = matches[0]
-        src = product.path
-        dst = os.path.join(task.task.run_folder, product.unit, product.type)
+
+        src = notification.path
+        dst = os.path.join(self.task_in_progress.task.run_folder, notification.initiator.hostname)
         try:
             os.symlink(src, dst)
             logger.info(f"{op}: created symlink '{src}' -> '{dst}'")
@@ -551,7 +552,7 @@ router.add_api_route(base_path + '/unit/{unit_name}/power_switch/outlet', tags=[
 
 router.add_api_route(base_path + '/get_assigned_tasks', tags=[tag], endpoint=controller.get_assigned_tasks)
 router.add_api_route(base_path + '/execute_assigned_task', tags=[tag], endpoint=controller.execute_assigned_task)
-router.add_api_route(base_path + '/task_product_notification', tags=[tag], endpoint=controller.task_product_notification)
+router.add_api_route(base_path + '/task_acquisition_path_notification', tags=[tag], endpoint=controller.task_acquisition_path_notification)
 
 
 if __name__ == '__main__':
