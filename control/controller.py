@@ -17,7 +17,7 @@ from watchdog.events import FileSystemEvent
 from threading import Lock, Thread
 from fastapi import APIRouter
 import random
-from common.tasks.models import AssignedTaskModel, TaskProduct
+from common.tasks.models import AssignedTaskModel, TaskNotification
 from common.paths import PathMaker
 import asyncio
 from pathlib import Path
@@ -464,7 +464,7 @@ class Controller:
         asyncio.create_task(task.execute())
         return CanonicalResponse_Ok
 
-    async def task_product_notification(self, product: TaskProduct):
+    async def task_product_notification(self, product: TaskNotification):
         """
         Receives locations of products related to a running task:
         - from units: type: 'autofocus' or 'acquisition'
