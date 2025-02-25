@@ -480,9 +480,10 @@ class Controller:
             logger.error(f"ignored notification for task '{notification.task_id}' (task in progress '{self.task_in_progress.task.ulid}")
             return
 
-        src = notification.path
-        dst = os.path.join(self.task_in_progress.task.run_folder, notification.initiator.hostname)
+        src = notification.src
+        dst = os.path.join(self.task_in_progress.task.run_folder, notification.initiator.hostname, notification.link)
         try:
+            os.makedirs(os.path.dirname(dst))
             os.symlink(src, dst)
             logger.info(f"{op}: created symlink '{src}' -> '{dst}'")
         except Exception as e:
@@ -550,9 +551,10 @@ router.add_api_route(base_path + '/unit/{unit_name}/power_switch/outlet', tags=[
 # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
 # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)
 
+tag = 'Tasks'
 router.add_api_route(base_path + '/get_assigned_tasks', tags=[tag], endpoint=controller.get_assigned_tasks)
 router.add_api_route(base_path + '/execute_assigned_task', tags=[tag], endpoint=controller.execute_assigned_task)
-router.add_api_route(base_path + '/task_acquisition_path_notification', tags=[tag], endpoint=controller.task_acquisition_path_notification)
+router.add_api_route(base_path + '/task_acquisition_path_notification', methods=['PUT'], tags=[tag], endpoint=controller.task_acquisition_path_notification)
 
 
 if __name__ == '__main__':
