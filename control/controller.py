@@ -17,7 +17,7 @@ from watchdog.events import FileSystemEvent
 from threading import Lock, Thread
 from fastapi import APIRouter
 import random
-from common.tasks.models import AssignedTaskModel, TaskAcquisitionPathNotification
+from common.tasks.models import TaskModel, TaskAcquisitionPathNotification
 from common.paths import PathMaker
 import asyncio
 from pathlib import Path
@@ -57,7 +57,7 @@ class TasksContainer:
             self.tasks = []
             for task_file in task_files:
                 try:
-                    task = AssignedTaskModel.from_toml_file(task_file)
+                    task = TaskModel.from_toml_file(task_file)
                 except Exception as e:
                     logger.error(f"could not load task from {task_file}, error: {e}")
                     continue
@@ -82,9 +82,9 @@ class TasksContainer:
         if not path.match(TasksContainer.TASK_PATH_PATTERN):
             return
         try:
-            new_task = AssignedTaskModel.from_toml_file(str(path))
+            new_task = TaskModel.from_toml_file(str(path))
         except Exception as e:
-            logger.error(f"could not load an AssignedTaskModel from '{str(path)}', error: {e}")
+            logger.error(f"could not load a TaskModel from '{str(path)}', error: {e}")
             return
 
         # check for duplicates
@@ -95,7 +95,7 @@ class TasksContainer:
                     return
             # add it
             self.tasks.append(new_task)
-            logger.info(f"task '{new_task.task.ulid}' created in '{str(path)}'")
+            # logger.info(f"task '{new_task.task.ulid}' created in '{str(path)}'")
 
     def on_modified(self, event: FileSystemEvent):
         """
@@ -108,7 +108,7 @@ class TasksContainer:
             return
 
         try:
-            modified_task = AssignedTaskModel.from_toml_file(str(path))
+            modified_task = TaskModel.from_toml_file(str(path))
         except Exception as e:
             logger.error(f"could not load updated task from '{str(path)}', error: {e}")
             return
@@ -118,7 +118,7 @@ class TasksContainer:
                 if task.task.ulid == modified_task.task.ulid:
                     self.tasks.remove(task)
                     self.tasks.append(modified_task)
-                    logger.info(f"task '{modified_task.task.ulid}' modified in '{str(path)}'")
+                    # logger.info(f"task '{modified_task.task.ulid}' modified in '{str(path)}'")
 
     def on_deleted(self, event: FileSystemEvent):
         """
@@ -133,13 +133,13 @@ class TasksContainer:
         with self.lock:
             previous_ulids: List[str] = [t.task.ulid for t in self.tasks]
             current_task_files = Path(self.path).glob('TSK_*.toml')
-            current_tasks: List[AssignedTaskModel] = []
+            current_tasks: List[TaskModel] = []
             for file in current_task_files:
                 try:
-                    task = AssignedTaskModel.from_toml_file(file)
+                    task = TaskModel.from_toml_file(file)
                     current_tasks.append(task)
                 except ValidationException as e:
-                    logger.error(f"could not load an AssignedTaskModel from '{file}' (error: {e})")
+                    logger.error(f"could not load a TaskModel from '{file}' (error: {e})")
                     continue
 
             current_ulids = [t.task.ulid for t in current_tasks]
@@ -148,7 +148,8 @@ class TasksContainer:
                 deleted_task = [t for t in self.tasks if t.task.ulid == deleted_ulid]
                 if len(deleted_task) == 1:
                     self.tasks.remove(deleted_task[0])
-                    logger.info(f"task '{deleted_ulid}' was deleted from '{self.path}'")
+                    # logger.info(f"task '{deleted_ulid}' was deleted from '{self.path}'")
+
 
 class Spec(Component):
 
@@ -296,6 +297,7 @@ class ControlledUnit(Component, SwitchedOutlet, NetworkedDevice):
     async def abort(self):
         return await self.api.get('abort')
 
+
 class Controller:
     """
     The Scheduler:
@@ -346,7 +348,7 @@ class Controller:
             self.failed_tasks_container,
             self.in_progress_task_container,
             ]
-        self.task_in_progress: Optional[AssignedTaskModel] = None
+        self.task_in_progress: Optional[TaskModel] = None
 
         self._terminated = False
 
@@ -463,7 +465,7 @@ class Controller:
         os.makedirs(task.task.run_folder, exist_ok=True)
         os.link(task.task.file, os.path.join(task.task.run_folder, 'task'))
         self.task_in_progress = task
-        asyncio.create_task(task.execute())
+        asyncio.create_task(task.execute(controller=self))
         return CanonicalResponse_Ok
 
     async def task_acquisition_path_notification(self, notification: TaskAcquisitionPathNotification):
