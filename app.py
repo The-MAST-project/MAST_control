@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from common.config import Config
 from control.controller import router as controller_router
 from control.controller import controller
@@ -22,14 +22,27 @@ app = FastAPI(
     # lifespan=lifespan,
 )
 
+# origins = [
+#     "http://localhost",
+#     "http://mast-wis-control",
+#     "http://mast-wis-control.weizmann.ac.il"
+#     "http://localhost:3000",
+#     "http://mast-wis-control:3000",
+#     "http://mast-wis-control.weizmann.ac.il:3000"
+# ]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+from common.utils import BASE_CONTROL_PATH
+@app.websocket(BASE_CONTROL_PATH + '/activity_notification_client')
+async def activity_notification_ws(websocket: WebSocket):
+    await controller.activity_notification_client(websocket)
 
 app.include_router(controller_router)
 
