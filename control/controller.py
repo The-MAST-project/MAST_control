@@ -1,18 +1,18 @@
 import os
-import time
 import socket
 
 from fastapi.exceptions import ValidationException
-from common.utils import BASE_CONTROL_PATH, Component, time_stamp, CanonicalResponse, CanonicalResponse_Ok
-from common.utils import function_name
+from common.utils import BASE_CONTROL_PATH, time_stamp, CanonicalResponse, CanonicalResponse_Ok
+from common.components import Component
+from common.utils import function_name, RepeatTimer
 from common.mast_logging import init_log
 from common.fswatcher import FsWatcher
-from common.config import Config
+from common.config import Config, Site
 from common.api import UnitApi, SpecApi
 from common.networking import NetworkedDevice
 from common.dlipowerswitch import SwitchedOutlet, OutletDomain
 import logging
-from typing import List, Optional, Literal, Dict
+from typing import List, Optional, Literal, Dict, Set
 from watchdog.events import FileSystemEvent
 from threading import Lock, Thread
 from fastapi import APIRouter
@@ -21,6 +21,8 @@ from common.tasks.models import TaskModel, TaskAcquisitionPathNotification
 from common.paths import PathMaker
 import asyncio
 from pathlib import Path
+from pydantic import BaseModel
+from fastapi import WebSocket, WebSocketDisconnect
 
 logger = logging.getLogger('controller')
 init_log(logger)
@@ -151,6 +153,14 @@ class TasksContainer:
                     # logger.info(f"task '{deleted_ulid}' was deleted from '{self.path}'")
 
 
+class TasksResponse(BaseModel):
+    maintainer: str
+    in_progress: Optional[List[TaskModel]]
+    assigned: Optional[List[TaskModel]]
+    pending: Optional[List[TaskModel]]
+    failed: Optional[List[TaskModel]]
+
+
 class Spec(Component):
 
     @property
@@ -218,18 +228,32 @@ class Spec(Component):
 
 
 class ControlledUnit(Component, SwitchedOutlet, NetworkedDevice):
-    def __init__(self, host: str):
+    def __init__(self, host: str, _controller: 'Controller'):
         Component.__init__(self)
         NetworkedDevice.__init__(self, conf={'network': {'host': host}})
-        SwitchedOutlet.__init__(self, OutletDomain.Unit, outlet_name='Computer')
+        SwitchedOutlet.__init__(self, OutletDomain.Unit, unit_name=host, outlet_name='Computer')
         if not self.is_on():
             self.power_on()
             # TODO: wait till the unit computer boots
         self.powered = self.is_on()
         self._was_shut_down = False
         # ApiUnit calls the remote 'status'
-        logger.info(f"trying to make an ApiUnit(host='{self.network.hostname}') connection ...")
-        self.api = UnitApi(self.network.hostname)
+        logger.info(f"trying to make an ApiUnit(host='{host}') connection ...")
+        self.controller = _controller
+        self.timer = RepeatTimer(interval=25 + random.randint(0, 5, ), function=self.on_timer).start()
+        self.api = UnitApi(host)
+
+    def on_timer(self):
+        short_status = {
+            'type': 'short',
+            'detected': False,
+            'powered': self.powered,
+        }
+        if not hasattr(self, 'api'):
+            return short_status
+
+        response: CanonicalResponse = asyncio.run(self.api.get('status'))
+        self.controller.unit_statuses[self.name] = response.value if response.succeeded else short_status
 
     @property
     async def detected(self) -> bool:
@@ -297,6 +321,13 @@ class ControlledUnit(Component, SwitchedOutlet, NetworkedDevice):
     async def abort(self):
         return await self.api.get('abort')
 
+class ActivityNotification(BaseModel):
+    initiator: str
+    activity: int
+    activity_verbal: str
+    started: bool
+    duration: Optional[str] = None  # [seconds]
+
 
 class Controller:
     """
@@ -332,11 +363,6 @@ class Controller:
         return socket.gethostname()
 
     def __init__(self):
-
-        # assigned_tasks_top = os.path.join(PathMaker().make_tasks_folder(), 'assigned')
-        # self.assigned_tasks = common.tasks.load_assigned()
-        # logger.info(f"loaded {len(self.assigned_tasks)} assigned tasks from '{assigned_tasks_top}'")
-
         self.pending_tasks_container = TasksContainer(folder_name='pending')
         self.assigned_tasks_container = TasksContainer(folder_name='assigned')
         self.failed_tasks_container = TasksContainer(folder_name='failed')
@@ -352,24 +378,28 @@ class Controller:
 
         self._terminated = False
 
-        self.units: List[ControlledUnit] = []
+        self.units: Dict[str, ControlledUnit] = {}
+        self.unit_statuses: dict = {}
         self.spec: Spec | None = None
+        self.spec_status: dict = {}
+        self.activity_notification_clients: Set[WebSocket] = set()
 
         def make_unit(name: str):
-            interval = 25 + random.randint(0, 10)
-            unit = ControlledUnit(host=name)
-            self.units.append(unit)
-            while not self._terminated and not unit.api.detected:
-                time.sleep(interval)
-                unit.api.get('status')
+            if not name.startswith('mast'):
+                name = 'mast' + name
+            self.units[name] = ControlledUnit(host=name, _controller=self)
             logger.info(f"made a Unit connection with '{name}'")
 
-        sites_conf = Config().get_sites()
-        for site in sites_conf:
+        sites = Config().get_sites()
+        for site in sites:
             if hasattr(site, 'local') and site.local == True:
-                for unit_name in site['deployed']:
+                for unit_name in site.deployed_units:
                     Thread(target=make_unit, args=[unit_name]).start()
                 break
+
+    async def fetch_unit_status(self, unit_name: str):
+        stat = await self.units[unit_name].api.get('status')
+        return stat
 
     def start_controlling(self):
         self._terminated = False
@@ -391,57 +421,44 @@ class Controller:
         not_detected = {
             'detected': False,
         }
-        time_stamp(not_detected)
+
         spec_status = not_detected
         if self.spec and self.spec.api and self.spec.api.client and self.spec.api.client.detected:
             spec_status = {'detected': self.spec.api.client.detected}
         return {
             'spec': spec_status,
-            'units': [{unit.name: unit.status if unit.api.detected else not_detected} for unit in self.units]
+            'units': self.unit_statuses,
+            'date': time_stamp(),
         }
 
-    def unit_minimal_status(self, unit_name: str) -> dict | None:
+    def unit_status(self, unit_name: str) -> dict | None:
         """
-        Returns a minimal status for the unit, including only 'powered' and 'detected'
-        Anyone wanting the whole status should ask the unit directly
+        Returns a unit's status
         :param unit_name:
         :return:
         """
-        for unit in self.units:
-            if unit.name == unit_name:
-                detected = unit.api.detected
-                ret = {
-                    'type': 'short',
-                    'powered': unit.powered,
-                    'detected': detected
-                }
-                return ret
-        return None
+        return self.unit_statuses[unit_name] if unit_name in self.unit_statuses else {'detected': False}
+
 
     def power_switch_status(self, unit_name) -> dict | None:
-        for unit in self.units:
-            if unit.name == unit_name:
-                return unit.power_switch.status()
-        return None
+        return self.units[unit_name] if unit_name in self.units else None
 
     def set_outlet(self, unit_name, outlet: int | str, state: Literal['on', 'off', 'toggle']):
         if isinstance(outlet, str):
             outlet = int(outlet)
         logger.info(f"set_outlet: {unit_name=}, {outlet=}, {state=}")
-        for unit in self.units:
-            if unit.name == unit_name:
-                if state == 'on':
-                    unit.power_switch.on(outlet=outlet-1)
-                elif state == 'off':
-                    unit.power_switch.off(outlet=outlet-1)
-                elif state == 'toggle':
-                    unit.power_switch.toggle(outlet=outlet-1)
-                return
+        if unit_name in self.units:
+            if state == 'on':
+                self.units[unit_name].power_switch.on(outlet=outlet-1)
+            elif state == 'off':
+                self.units[unit_name].power_switch.off(outlet=outlet-1)
+            elif state == 'toggle':
+                self.units[unit_name].power_switch.toggle(outlet=outlet-1)
 
 
-    def get_assigned_tasks(self,
+    def get_tasks(self,
                   ulid: Optional[str] = None,
-                  name: Optional[str] = None) -> List[Dict]:
+                  name: Optional[str] = None) -> TasksResponse:
         """
         Get either a specific (by name or by ulid) pending task, or all of them
 
@@ -449,12 +466,11 @@ class Controller:
         :param name: optional name
         :return: one or more targets, of the specified kind
         """
-        if ulid:
-            return [t.model_dump() for t in self.assigned_tasks_container.tasks if t.task.ulid == ulid]
-        elif name:
-            return [t.model_dump() for t in self.assigned_tasks_container.tasks if t.task.name == name]
-        else:
-            return [t.model_dump() for t in self.assigned_tasks_container.tasks]
+        return TasksResponse(maintainer=self.name,
+                                                assigned=self.assigned_tasks_container.tasks,
+                                                pending=self.pending_tasks_container.tasks,
+                                                failed=self.failed_tasks_container.tasks,
+                                                in_progress=self.in_progress_task_container.tasks)
 
     async def execute_assigned_task(self, ulid: str) -> CanonicalResponse:
         matching_tasks = [t for t in self.assigned_tasks_container.tasks if t.task.ulid == ulid]
@@ -491,6 +507,44 @@ class Controller:
         except Exception as e:
             logger.error(f"{op}: failed to symlink '{src}' -> '{dst}' (error: {e})")
 
+    async def activity_notification_endpoint(self, notification: ActivityNotification):
+        """
+        Listens for activity notifications (from units, specs and self) and pushes them via WebSocket
+        to all the registered GUIs.
+
+        :param notification:
+        :return:
+        """
+        if not self.activity_notification_clients:
+            logger.info(f"{function_name()}: no clients")
+            return
+
+        disconnected = []
+        for ws in self.activity_notification_clients:
+            try:
+                logger.info(f"{function_name()}: sending to {ws} ...")
+                await ws.send_json(notification.model_dump())
+            except WebSocketDisconnect:
+                disconnected.append(ws)
+
+        for ws in disconnected:
+            self.activity_notification_clients.remove(ws)
+
+    async def activity_notification_client(self, websocket: WebSocket):
+        """ Receives websocket connections from web GUI
+        """
+        await websocket.accept()
+        self.activity_notification_clients.add(websocket)
+        logger.info(f"new websocket from {websocket.client}")
+        try:
+            while True:
+                data = await websocket.receive_text()
+        except WebSocketDisconnect:
+            logger.info(f"websocket {websocket.client} disconnected")
+        finally:
+            self.activity_notification_clients.remove(websocket)
+            # await websocket.close()
+
 
 controller: Controller = Controller()
 
@@ -508,7 +562,7 @@ def shutdown():
     controller.shutdown()
 
 
-def config_get_sites_conf() -> dict:
+def config_get_sites_conf() -> List[Site]:
     return Config().get_sites()
 
 
@@ -547,16 +601,18 @@ router.add_api_route(base_path + '/config/get_unit/{unit_name}', tags=[tag], end
 router.add_api_route(base_path + '/config/set_unit/{unit_name}', tags=[tag], endpoint=config_set_unit)
 router.add_api_route(base_path + '/config/get_thar_filters', tags=[tag], endpoint=config_get_thar_filters)
 
-router.add_api_route(base_path + '/unit/{unit_name}/minimal_status', tags=[tag], endpoint=controller.unit_minimal_status)
+router.add_api_route(base_path + '/unit/{unit_name}/status', tags=[tag], endpoint=controller.unit_status)
 router.add_api_route(base_path + '/unit/{unit_name}/power_switch/status', tags=[tag], endpoint=controller.power_switch_status)
 router.add_api_route(base_path + '/unit/{unit_name}/power_switch/outlet', tags=[tag], endpoint=controller.set_outlet)
 # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
 # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)
 
 tag = 'Tasks'
-router.add_api_route(base_path + '/get_assigned_tasks', tags=[tag], endpoint=controller.get_assigned_tasks)
+router.add_api_route(base_path + '/get_tasks', tags=[tag], endpoint=controller.get_tasks)
 router.add_api_route(base_path + '/execute_assigned_task', tags=[tag], endpoint=controller.execute_assigned_task)
 router.add_api_route(base_path + '/task_acquisition_path_notification', methods=['PUT'], tags=[tag], endpoint=controller.task_acquisition_path_notification)
+
+router.add_api_route(base_path + '/activity_notification', methods=['PUT'], endpoint=controller.activity_notification_endpoint)
 
 
 if __name__ == '__main__':
