@@ -279,7 +279,7 @@ class ControlledUnit(Component, SwitchedOutlet, NetworkedDevice):
             ret.append('not connected')
         elif not self.operational:
             if not self.detected:
-                ret.append(f"api client not detected")
+                ret.append("api client not detected")
             else:
                 why: List[str] | None  = await self.api.get('why_not_operational')
                 if why:
@@ -392,7 +392,7 @@ class Controller:
 
         sites = Config().get_sites()
         for site in sites:
-            if hasattr(site, 'local') and site.local == True:
+            if hasattr(site, 'local') and site.local is True:
                 for unit_name in site.deployed_units:
                     Thread(target=make_unit, args=[unit_name]).start()
                 break
@@ -538,7 +538,7 @@ class Controller:
         logger.info(f"new websocket from {websocket.client}")
         try:
             while True:
-                data = await websocket.receive_text()
+                _ = await websocket.receive_text()
         except WebSocketDisconnect:
             logger.info(f"websocket {websocket.client} disconnected")
         finally:
