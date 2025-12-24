@@ -1,5 +1,38 @@
 {
+  // Language server settings
   "python.languageServer": "Pylance",
   "python.analysis.usePullDiagnostics": true,
-  "python.analysis.enablePytestSupport": true
+  "python.analysis.enablePytestSupport": true,
+  "python.analysis.typeCheckingMode": "basic",
+  // Ruff configuration
+  "ruff.enable": true,
+  "ruff.organizeImports": true,
+  "ruff.fixAll": true,
+  // Formatting
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": true,
+  "editor.formatOnType": true,
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.rulers": [88],
+    "editor.codeActionsOnSave": {
+      "source.fixAll": "explicit",
+      "source.organizeImports": "explicit"
+    }
+  },
+  // File handling
+  "files.autoSave": "onFocusChange",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  // Search settings
+  "search.exclude": {
+    "**/.git": true,
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/.venv": true,
+    "**/venv": true
+  },
+  "editor.renderWhitespace": "all",
+  "editor.renderControlCharacters": true
 }
