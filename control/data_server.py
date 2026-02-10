@@ -7,12 +7,14 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
 from common.canonical import CanonicalResponse
+from common.config import Config
 from common.const import Const
 from common.mast_logging import init_log
+from control.rewrites import rewrite_mast_share_url
 
 logger = logging.getLogger("mast.control.data_server")
 init_log(logger)
@@ -43,7 +45,7 @@ class DataServer:
             return
         self._initialized = True
 
-    def autofocus(self, unit_name: str) -> CanonicalResponse:
+    def autofocus(self, unit_name: str, request: Request) -> CanonicalResponse:
         """
         Returns a tree hierarchy of autofocus sessions and files for the given unit.
         Sorted by date (descending) then by session sequence (descending).
@@ -78,7 +80,7 @@ class DataServer:
 
         def autofocus_storage_url(file_name: str) -> str:
             path = Path(file_name)
-            return f"http://mast-wis-control:8000/{unit_name}/{path.relative_to(root)}"
+            return f"http://mast-wis-control:8008/{unit_name}/{path.relative_to(root)}"
 
         if not root.exists():
             return CanonicalResponse(errors=[f"Unit data not found at '{root}'"])
@@ -90,6 +92,18 @@ class DataServer:
             key=lambda d: _date_key(d.name),
             reverse=True,
         )
+        sites = Config().get_sites()
+        site = next((s for s in sites if unit_name in s.deployed_units), None)
+        if not site:
+            logger.warning(f"Unit '{unit_name}' not found in any configured site")
+            return CanonicalResponse(
+                errors=[
+                    f"Unit '{unit_name}' not found as deployed in any of the configured sites"
+                ]
+            )
+        controller_host = site.controller_host
+        controller_ipaddr = socket.gethostbyname(controller_host)
+
         for date_dir in date_dirs:
             autofocus_dir = date_dir / "Autofocus"
             if not autofocus_dir.exists():
@@ -105,7 +119,11 @@ class DataServer:
                 if not fits_files:
                     fits_files = [f.name for f in session_dir.glob("*.fits")]
 
-                folder_url = f"http://mast-wis-control:8000/{unit_name}/{date_dir.name}/Autofocus/{session_number}"
+                # folder_url = f"http://{controller_ipaddr}:8008/{unit_name}/{date_dir.name}/Autofocus/{session_number}"
+                folder_url = rewrite_mast_share_url(
+                    request,
+                    f"http://{controller_ipaddr}:8008/{unit_name}/{date_dir.name}/Autofocus/{session_number}",
+                )
 
                 fits_files = (
                     [f"{folder_url}/{f}" for f in fits_files] if fits_files else []

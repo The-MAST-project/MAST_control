@@ -1,27 +1,33 @@
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
 
 from common.config import Config
-from common.const import Const
 from control.controller import Controller
 from control.data_server import DataServer
 
 
 @asynccontextmanager
-async def lifespan(fast_app: FastAPI):
-    Controller().startup()
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info(f"{app.title} starting up...")
+    controller = Controller()
     yield
-    Controller().shutdown()
+    # Shutdown
+    logger.info(f"{app.title} shutting down...")
+    controller.shutdown()
+    controller.executor.shutdown(wait=True)
+    controller.config_timer.cancel()
+    controller.fetch_timer.cancel()
 
 
 app = FastAPI(
     default_response_class=ORJSONResponse,
-    title="The MAST control API",
-    # lifespan=lifespan,
+    title="MAST_control",
+    lifespan=lifespan,
 )
 
 # origins = [
@@ -40,11 +46,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.websocket(Const.BASE_CONTROL_PATH + "/activity_notification_client")
-async def activity_notification_ws(websocket: WebSocket):
-    await Controller().activity_notification_client(websocket)
 
 
 app.include_router(Controller().api_router)

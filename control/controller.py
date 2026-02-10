@@ -1,323 +1,356 @@
 import asyncio
+import atexit
 import logging
 import os
-import random
+import signal
 import socket
+from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Set, cast
+from threading import Event, Lock
+from typing import Any, Literal, Set
 
-from cachetools import TTLCache, cached
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import APIRouter, WebSocket
 from pydantic import BaseModel
 
-from common.api import SpecApi, UnitApi
+from common.activities import Activities, ControllerActivities
+from common.api import ControllerApi, SpecApi, UnitApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config, Site, UnitConfig
 from common.const import Const
 from common.dlipowerswitch import (
-    OutletDomain,
-    SwitchedOutlet,
+    DliPowerSwitch,
 )
-from common.interfaces.components import Component
 from common.mast_logging import init_log
 from common.models.statuses import (
-    ShortStatus,
-    SpecStatus,
-    UnitStatus,
+    BasicStatus,
+    ControllerStatus,
+    SitesStatus,
+    SiteStatus,
 )
-from common.networking import NetworkedDevice
+from common.notifications import UiUpdateRequest
 from common.tasks.models import TaskAcquisitionPathNotification
 from common.utils import (
     RepeatTimer,
     function_name,
+    time_stamp,
 )
-from control.planning import Planner
+from control.planning import Plan, Planner
 
 logger = logging.getLogger("controller")
 init_log(logger)
 
-_units_status_cache = TTLCache(maxsize=20, ttl=30)
+# _units_status_cache = TTLCache(maxsize=20, ttl=30)
 
 
-@cached(_units_status_cache, key=lambda self: self.name)
-def _fetch_status_from_api(self) -> "UnitStatus | None":
-    """
-    Module-level cached helper. Cache key is unit.name.
-    This calls the unit API and returns the parsed UnitStatus (or None).
-    """
-    response: CanonicalResponse = asyncio.run(self.api.get("status"))
-    return cast(UnitStatus, response.value) if response.succeeded else None
+# @cached(_units_status_cache, key=lambda self: self.name)
+# def _fetch_unit_status_from_api(self) -> "UnitStatus | None":
+#     """
+#     Module-level cached helper. Cache key is unit.name.
+#     This calls the unit API and returns the parsed UnitStatus (or None).
+#     """
+#     response: CanonicalResponse = asyncio.run(self.api.get("status"))
+#     return cast(UnitStatus, response.value) if response.succeeded else None
 
 
-class ControllerStatus(BaseModel):
-    detected: bool
-    spec: dict
-    units: dict
-    date: str
+# class ControlledSpec(Component):
+#     @property
+#     def was_shut_down(self) -> bool:
+#         return self._was_shut_down
+
+#     @property
+#     def status(self):
+#         return self.spec_status
+
+#     @property
+#     def name(self) -> str:
+#         return "spec"
+
+#     def __init__(self, site: Site, controller: "Controller"):
+#         Component.__init__(self, ControllerActivities)
+#         self.site = site
+#         self.controller = controller
+#         logger.info(
+#             f"trying to make a Spec() connection with host='{self.site.spec_host}' ..."
+#         )
+#         self.api = SpecApi(site_name=site.name)
+#         self.spec_status: SpecStatus | None = None
+#         self.timer = RepeatTimer(
+#             interval=30 + random.randint(0, 5), function=self.on_timer
+#         ).start()
+#         self._was_shut_down = False
+
+#     def on_timer(self):
+#         response: CanonicalResponse = asyncio.run(self.api.get("status"))
+#         if response.succeeded and response.value:
+#             self.spec_status = response.value
+
+#     @property
+#     def detected(self) -> bool:
+#         if self.api and self.api.client:
+#             response: CanonicalResponse = self.api.client.get("status")
+#             return response.value.detected if response.is_success else False
+#         return False
+
+#     @property
+#     def connected(self) -> bool:
+#         if self.api and self.api.client:
+#             response: CanonicalResponse = self.api.client.get("status")
+#             return response.value.connected if response.is_success else False
+#         return False
+
+#     def abort(self):
+#         if self.api.client:
+#             self.api.client.get("abort")
+
+#     @property
+#     def operational(self) -> bool:
+#         if self.api.client:
+#             response = self.api.client.get("status")
+#             return response.value.operational if response.is_success else False
+#         return False
+
+#     @property
+#     def why_not_operational(self) -> list[str]:
+#         ret: list[str] = []
+
+#         if not self.detected:
+#             ret.append(f"{self.name}: not detected")
+#         elif not self.connected:
+#             ret.append(f"{self.name}: not connected")
+#         elif self.api.client:
+#             response: CanonicalResponse = self.api.client.get("status")
+#             if response.succeeded:
+#                 status = response.value
+#                 if status not in (None, [], "Never"):
+#                     for reason in status.why_not_operational:  # type: ignore
+#                         ret.append(reason)
+
+#         return ret
+
+#     def startup(self):
+#         if self.api.client:
+#             self._was_shut_down = False
+#             self.api.client.get("startup")
+
+#     def shutdown(self):
+#         if self.api.client:
+#             self._was_shut_down = True
+#             self.api.client.get("shutdown")
 
 
-class ControlledSpec(Component):
-    @property
-    def was_shut_down(self) -> bool:
-        return self._was_shut_down
+# class ControlledUnit(Component, SwitchedOutlet, NetworkedDevice):
+#     def __init__(self, site_name: str, host: str, controller: "Controller"):
+#         Component.__init__(self, ControlledUnitActivities)
+#         NetworkedDevice.__init__(self, conf={"network": {"host": host}})
+#         SwitchedOutlet.__init__(
+#             self, OutletDomain.UnitOutlets, unit_name=host, outlet_name="Computer"
+#         )
+#         if not self.is_on():
+#             self.power_on()
+#             # TODO: wait till the unit computer boots
+#         self.powered = self.is_on()
+#         self._was_shut_down = False
 
-    @property
-    def status(self):
-        return self._status
+#         self.controller = controller
+#         self.site_name = site_name
+#         self.api = UnitApi(hostname=host)
+#         self._status: UnitStatus | None = None
 
-    @property
-    def name(self) -> str:
-        return "spec"
+#         try:
+#             response: CanonicalResponse = asyncio.run(self.api.get("status"))
+#             if response.succeeded:
+#                 logger.info(f"Connected to unit '{host}' successfully.")
+#                 self._status = cast(UnitStatus, response.value)
+#             else:
+#                 logger.warning(f"Failed to connect to unit '{host}': {response.errors}")
+#         except Exception as e:
+#             logger.error(f"Exception while connecting to unit '{host}': {e}")
 
-    def __init__(self, site: Site, controller: "Controller"):
-        Component.__init__(self)
-        self.site = site
-        self.controller = controller
-        logger.info(
-            f"trying to make a Spec() connection with host='{self.site.spec_host}' ..."
-        )
-        self.api = SpecApi(site_name=site.name)
-        self._status: SpecStatus | None = None
-        self.timer = RepeatTimer(
-            interval=30 + random.randint(0, 5), function=self.on_timer
-        ).start()
-        self._was_shut_down = False
+#         self.timer = RepeatTimer(
+#             interval=25 + random.randint(0, 5), function=self.on_timer
+#         ).start()
 
-    def on_timer(self):
-        response: CanonicalResponse = asyncio.run(self.api.get("status"))
-        self._status = response.value if response.succeeded else None
+#     def on_timer(self):
+#         short_status = BasicStatus(
+#             detected=False,
+#             powered=self.powered,
+#             operational=False,
+#         )
 
-    @property
-    def detected(self) -> bool:
-        if self.api and self.api.client:
-            response: CanonicalResponse = self.api.client.get("status")
-            return response.value.detected if response.is_success else False
-        return False
+#         response: CanonicalResponse = asyncio.run(self.api.get("status"))
+#         new_status = (
+#             cast(UnitStatus, response.value) if response.succeeded else short_status
+#         )
+#         # update instance cache and shared TTLCache so callers use fresh value
+#         self._status = new_status
+#         try:
+#             _units_status_cache[self.name] = new_status
+#         except Exception:
+#             # best-effort: ignore cache errors
+#             pass
 
-    @property
-    def connected(self) -> bool:
-        if self.api and self.api.client:
-            response: CanonicalResponse = self.api.client.get("status")
-            return response.value.connected if response.is_success else False
-        return False
+#     @property
+#     def status(self) -> "UnitStatus | BasicStatus | None":
+#         """
+#         Return cached unit status. Priority:
+#         1) in-memory value self._status
+#         2) shared TTL cache keyed by unit.name (via _fetch_status_from_api)
+#         3) call API (via cached helper) which will populate the TTL cache
+#         """
+#         # prefer the most recent in-memory value
+#         if self._status is not None:
+#             return self._status
+#         # try shared cache
+#         cached_val = _units_status_cache.get(self.name)
+#         if cached_val is not None:
+#             self._status = cached_val
+#             return cached_val
+#         # fall back to calling API via cached helper (will populate cache)
+#         try:
+#             val = _fetch_unit_status_from_api(self)
+#         except Exception:
+#             val = None
+#         self._status = val
+#         return val
 
-    def abort(self):
-        if self.api.client:
-            self.api.client.get("abort")
+#     @property
+#     async def detected(self) -> bool:
+#         response = await self.api.get("status") if self.api else None
+#         if response and response.value:
+#             return response.value.detected
+#         else:
+#             return False
 
-    @property
-    def operational(self) -> bool:
-        if self.api.client:
-            response = self.api.client.get("status")
-            return response.value.operational if response.is_success else False
-        return False
+#     @property
+#     async def connected(self) -> bool:
+#         response = await self.api.get("status") if self.api else None
+#         if response and response.value:
+#             return response.value.connected
+#         else:
+#             return False
 
-    @property
-    def why_not_operational(self) -> list[str]:
-        ret: list[str] = []
+#     @property
+#     async def operational(self) -> bool:
+#         response = await self.api.get("status") if self.api else None
+#         if response and response.value:
+#             return response.value.operational
+#         else:
+#             return False
 
-        if not self.detected:
-            ret.append(f"{self.name}: not detected")
-        elif not self.connected:
-            ret.append(f"{self.name}: not connected")
-        elif self.api.client:
-            response: CanonicalResponse = self.api.client.get("status")
-            if response.succeeded:
-                status = response.value
-                if status not in (None, [], "Never"):
-                    for reason in status.why_not_operational:  # type: ignore
-                        ret.append(reason)
+#     @property
+#     async def why_not_operational(self) -> list[str]:
+#         ret: list[str] = []
+#         if not self.detected:
+#             ret.append(f"{self.name}: not detected")
+#         elif not self.connected:
+#             ret.append(f"{self.name}: not connected")
+#         elif not self.operational:
+#             if not self.detected:
+#                 ret.append(f"{self.name}: api client not detected")
+#             else:
+#                 response = await self.api.get("status") if self.api else None
+#                 if response and response.value:
+#                     for reason in response.value.why_not_operational:
+#                         ret.append(reason)
+#         return ret
 
-        return ret
+#     @property
+#     def was_shut_down(self) -> bool:
+#         return self._was_shut_down
 
-    def startup(self):
-        if self.api.client:
-            self._was_shut_down = False
-            self.api.client.get("startup")
+#     async def startup(self):
+#         self._was_shut_down = False
+#         return await self.api.get("startup")
 
-    def shutdown(self):
-        if self.api.client:
-            self._was_shut_down = True
-            self.api.client.get("shutdown")
+#     async def shutdown(self):
+#         self._was_shut_down = True
+#         return await self.api.get("shutdown")
 
+#     async def move_to_coordinates(self, ra: float, dec: float):
+#         return await self.api.get("move_to_coordinates", {"ra": ra, "dec": dec})
 
-class ControlledUnit(Component, SwitchedOutlet, NetworkedDevice):
-    def __init__(self, site_name: str, host: str, controller: "Controller"):
-        Component.__init__(self)
-        NetworkedDevice.__init__(self, conf={"network": {"host": host}})
-        SwitchedOutlet.__init__(
-            self, OutletDomain.UnitOutlets, unit_name=host, outlet_name="Computer"
-        )
-        if not self.is_on():
-            self.power_on()
-            # TODO: wait till the unit computer boots
-        self.powered = self.is_on()
-        self._was_shut_down = False
+#     async def expose(self, seconds):
+#         return await self.api.get("expose", {"seconds": seconds})
 
-        self.controller = controller
-        self.site_name = site_name
-        self.api = UnitApi(hostname=host)
-        self._status: UnitStatus | None = None
+#     @property
+#     def name(self) -> str:
+#         return self.network.hostname if self.network.hostname else "Unknown unit"
 
-        try:
-            response: CanonicalResponse = asyncio.run(self.api.get("status"))
-            if response.succeeded:
-                logger.info(f"Connected to unit '{host}' successfully.")
-                self._status: UnitStatus = cast(UnitStatus, response.value)
-            else:
-                logger.warning(f"Failed to connect to unit '{host}': {response.errors}")
-        except Exception as e:
-            logger.error(f"Exception while connecting to unit '{host}': {e}")
-
-        self.timer = RepeatTimer(
-            interval=25 + random.randint(0, 5), function=self.on_timer
-        ).start()
-
-    def on_timer(self):
-        short_status = ShortStatus(
-            type="short",
-            detected=False,
-            powered=self.powered,
-            operational=False,
-        )
-
-        response: CanonicalResponse = asyncio.run(self.api.get("status"))
-        new_status = (
-            cast(UnitStatus, response.value) if response.succeeded else short_status
-        )
-        # update instance cache and shared TTLCache so callers use fresh value
-        self._status = new_status
-        try:
-            _units_status_cache[self.name] = new_status
-        except Exception:
-            # best-effort: ignore cache errors
-            pass
-
-    @property
-    def status(self) -> "UnitStatus | ShortStatus | None":
-        """
-        Return cached unit status. Priority:
-        1) in-memory value self._status
-        2) shared TTL cache keyed by unit.name (via _fetch_status_from_api)
-        3) call API (via cached helper) which will populate the TTL cache
-        """
-        # prefer the most recent in-memory value
-        if self._status is not None:
-            return self._status
-        # try shared cache
-        cached_val = _units_status_cache.get(self.name)
-        if cached_val is not None:
-            self._status = cached_val
-            return cached_val
-        # fall back to calling API via cached helper (will populate cache)
-        try:
-            val = _fetch_status_from_api(self)
-        except Exception:
-            val = None
-        self._status = val
-        return val
-
-    @property
-    async def detected(self) -> bool:
-        response = await self.api.get("status") if self.api else None
-        if response and response.value:
-            return response.value.detected
-        else:
-            return False
-
-    @property
-    async def connected(self) -> bool:
-        response = await self.api.get("status") if self.api else None
-        if response and response.value:
-            return response.value.connected
-        else:
-            return False
-
-    @property
-    async def operational(self) -> bool:
-        response = await self.api.get("status") if self.api else None
-        if response and response.value:
-            return response.value.operational
-        else:
-            return False
-
-    @property
-    async def why_not_operational(self) -> list[str]:
-        ret: list[str] = []
-        if not self.detected:
-            ret.append(f"{self.name}: not detected")
-        elif not self.connected:
-            ret.append(f"{self.name}: not connected")
-        elif not self.operational:
-            if not self.detected:
-                ret.append(f"{self.name}: api client not detected")
-            else:
-                response = await self.api.get("status") if self.api else None
-                if response and response.value:
-                    for reason in response.value.why_not_operational:
-                        ret.append(reason)
-        return ret
-
-    @property
-    def was_shut_down(self) -> bool:
-        return self._was_shut_down
-
-    async def startup(self):
-        self._was_shut_down = False
-        return await self.api.get("startup")
-
-    async def shutdown(self):
-        self._was_shut_down = True
-        return await self.api.get("shutdown")
-
-    async def move_to_coordinates(self, ra: float, dec: float):
-        return await self.api.get("move_to_coordinates", {"ra": ra, "dec": dec})
-
-    async def expose(self, seconds):
-        return await self.api.get("expose", {"seconds": seconds})
-
-    @property
-    def name(self) -> str:
-        return self.network.hostname if self.network.hostname else "Unknown unit"
-
-    async def abort(self):
-        return await self.api.get("abort")
+#     async def abort(self):
+#         return await self.api.get("abort")
 
 
-class ActivityNotification(BaseModel):
-    initiator: str
-    activity: int
-    activity_verbal: str
-    started: bool
-    duration: str | None = None  # [seconds]
+# class ControlledSite:
+#     def __init__(self, controller, site_name: str) -> None:
+#         self.site_name = site_name
+#         self.controller = controller
+#         self.controlled_units: dict[str, ControlledUnit | None] | None = None
+#         self.controlled_spec: ControlledSpec | None = None
 
+#         site = [s for s in controller.config.sites if s.name == site_name][0]
+#         self.controlled_units = {}
+#         for unit_name in site.deployed_units:
+#             if unit_name not in site.units_in_maintenance:
+#                 self.controlled_units[unit_name] = ControlledUnit(
+#                     site_name=site_name,
+#                     host=unit_name,
+#                     controller=controller,
+#                 )
 
-class ControlledSite:
-    def __init__(self, controller, site_name: str) -> None:
-        self.site_name = site_name
-        self.controller = controller
-        self.controlled_units: dict[str, ControlledUnit] = {}
-        self.controlled_spec: ControlledSpec | None = None
-
-        site = [s for s in controller.config.sites if s.name == site_name][0]
-
-        for unit_name in site.deployed_units:
-            if unit_name not in site.units_in_maintenance:
-                self.controlled_units[unit_name] = ControlledUnit(
-                    site_name=site_name,
-                    host=unit_name,
-                    controller=controller,
-                )
-
-        if site.spec_host:
-            self.controlled_spec = ControlledSpec(site=site, controller=controller)
+#         if site.spec_host:
+#             self.controlled_spec = ControlledSpec(site=site, controller=controller)
 
 
 class ControllerConfig(BaseModel):
-    sites: list[Site] = []
+    managed_sites: list[Site] = []
+    managed_units: dict[
+        str, dict[str, UnitConfig | None]
+    ] = {}  # site_name -> unit_name -> UnitConfig | None
 
 
-class Controller:
+class CachedValue:
+    site_name: str
+    machine_name: str
+    last_attempt: datetime | None = None
+    last_success: datetime | None = None
+    interval: timedelta
+    value: Any | None = None
+    fetcher: Any | None = None  # Future from ThreadPoolExecutor
+    api: SpecApi | UnitApi | ControllerApi
+
+    def __init__(
+        self,
+        interval_seconds: float,
+        api: UnitApi | SpecApi | ControllerApi,
+        site_name: str,
+        machine_name: str,
+    ):
+        self.interval = timedelta(seconds=interval_seconds)
+        self.api = api
+        self.site_name = site_name
+        self.machine_name = machine_name
+
+    def needs_refresh(self) -> bool:
+        """Check if enough time has elapsed since last attempt"""
+        if self.last_attempt is None:
+            return True  # Never attempted
+
+        now = datetime.now(timezone.utc)
+        elapsed = now - self.last_attempt
+        return elapsed > self.interval
+
+    def time_since_last_success(self) -> timedelta | None:
+        """Return time elapsed since last successful fetch"""
+        if self.last_success is None:
+            return None
+
+        now = datetime.now(timezone.utc)
+        return now - self.last_success
+
+
+class Controller(Activities):
     """
     The Controller:
     - on startup:
@@ -362,6 +395,8 @@ class Controller:
         if self._initialized:
             return
 
+        Activities.__init__(self)
+        self.activities = ControllerActivities(0)
         try:
             self.planner = Planner(controller=self)
         except Exception as e:
@@ -371,133 +406,349 @@ class Controller:
         self._terminated = False
 
         self.activity_notification_clients: Set[WebSocket] = set()
+        self.hostname = socket.gethostname().split(".")[0]
 
         self.config = ControllerConfig()
-        self.config.sites = Config().get_sites()
-        self.controlled_sites: list[ControlledSite] = []
-        for site in self.sites_we_manage:
-            self.controlled_sites.append(
-                ControlledSite(
-                    site_name=site.name,
-                    controller=self,
-                )
-            )
+        sites = Config().get_sites()
+        for site in sites:
+            if self.hostname != site.controller_host:
+                continue
+            self.config.managed_sites.append(site)
+            self.config.managed_units[site.name] = {}
+            for unit_name in site.deployed_units:
+                if unit_name not in site.units_in_maintenance:
+                    self.config.managed_units[site.name][unit_name] = Config().get_unit(
+                        site.name, unit_name
+                    )
 
-            # for unit_name in site.deployed_units:
-            #     self.sites[site.name]["units"][unit_name] = {
-            #         "controlled_unit": None,
-            #         "status": ShortUnitStatus(
-            #             type="short",
-            #             detected=False,
-            #             powered=False,
-            #             operational=False,
-            #         ),
-            #     }
-            #     Thread(target=make_unit, args=[site.name, unit_name]).start()
+        self._shutdown_event: Event = Event()
+        self.lock: Lock = Lock()
+        self.executor = ThreadPoolExecutor(max_workers=25)
 
+        # Build cache hierarchy: site_name -> {"units": {unit_name: CachedValue}, "spec": CachedValue}
+        self.status_cache: dict[str, dict[str, Any]] = {}
+        self.power_switches: dict[
+            str, dict[str, DliPowerSwitch]
+        ] = {}  # power_switches[site_name][unit_name]
+
+        for site in self.config.managed_sites:
+            self.status_cache[site.name] = {
+                "units": {},
+                "spec": None,
+                "controller": None,
+            }
+
+            if site.name not in self.power_switches:
+                self.power_switches[site.name] = {}
+
+            # Create CachedValue for each unit
+            for unit_name in site.deployed_units:
+                if unit_name not in site.units_in_maintenance:
+                    unit_api = UnitApi(hostname=unit_name)
+                    self.status_cache[site.name]["units"][unit_name] = CachedValue(
+                        interval_seconds=30,
+                        api=unit_api,
+                        site_name=site.name,
+                        machine_name=unit_name,
+                    )
+
+                if unit_name not in self.power_switches[site.name]:
+                    ps_hostname = unit_name.replace(site.project, site.project + "ps")
+                    try:
+                        ps_ipaddr = socket.gethostbyname(ps_hostname)
+                    except socket.gaierror:
+                        ps_ipaddr = None
+                        logger.warning(
+                            f"{function_name()}: cannot resolve power switch hostname '{ps_hostname}'"
+                        )
+
+                    assert site.name in self.config.managed_units
+                    assert unit_name in self.config.managed_units[site.name]
+                    assert self.config.managed_units[site.name][unit_name] is not None
+
+                    unit_config = self.config.managed_units[site.name][unit_name]
+                    assert unit_config is not None
+                    ps_config = unit_config.power_switch
+                    self.power_switches[site.name][unit_name] = DliPowerSwitch(
+                        hostname=ps_hostname,
+                        ipaddr=ps_ipaddr,
+                        conf=ps_config,
+                    )
+
+            # Create CachedValue for spec
+            if site.spec_host:
+                for existing_site in self.status_cache:
+                    # have we already seen this controller machine?
+                    if "spec" in self.status_cache[existing_site]:
+                        cached_value = self.status_cache[existing_site]
+                        if (
+                            cached_value["spec"] is not None
+                            and cached_value["spec"].machine_name == site.spec_host
+                        ):
+                            self.status_cache[site.name]["spec"] = cached_value["spec"]
+                            break
+                else:
+                    # nope, make a new entry
+                    self.status_cache[site.name]["spec"] = CachedValue(
+                        interval_seconds=30,
+                        api=SpecApi(site_name=site.name),
+                        site_name=site.name,
+                        machine_name=site.spec_host,
+                    )
+
+            # Create CachedValue for controller
+            if site.controller_host:
+                for existing_site in self.status_cache:
+                    # have we already seen this controller machine?
+                    if "controller" in self.status_cache[existing_site]:
+                        cached_value = self.status_cache[existing_site]
+                        if (
+                            cached_value["controller"] is not None
+                            and cached_value["controller"].machine_name
+                            == site.controller_host
+                        ):
+                            self.status_cache[site.name]["controller"] = cached_value[
+                                "controller"
+                            ]
+                            break
+                else:
+                    # nope, make a new entry
+                    self.status_cache[site.name]["controller"] = CachedValue(
+                        interval_seconds=30,
+                        api=ControllerApi(site_name=site.name),
+                        site_name=site.name,
+                        machine_name=site.controller_host,
+                    )
+
+        self.config_timer: RepeatTimer = RepeatTimer(30, self.on_config_timer)
+        self.config_timer.start()
+
+        self.fetch_timer: RepeatTimer = RepeatTimer(2, self.on_fetch_timer)
+        self.fetch_timer.daemon = (
+            False  # Don't make it a daemon so we can clean up properly
+        )
+
+        self.refresh()
+        self.fetch_timer.start()
+
+        # Register cleanup on program exit
+        atexit.register(self._cleanup_on_exit)
+
+        # Register signal handlers for Ctrl+C detection
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+
+        self.in_progress: Plan | None = (
+            None  #  may be BatchOfPlans in the future, but start with just one plan
+        )
         self._initialized = True
 
-    @property
-    def sites_we_manage(self) -> list[Site]:
-        return [s for s in self.config.sites if s.controller_host == self.name]
+    def _cleanup_on_exit(self):
+        """Called automatically when Python exits (including Ctrl+C)"""
+        logger.info("atexit: Cleaning up Controller")
+        self.shutdown()
 
-    @property
-    def units_we_manage(self) -> list[str]:
-        units = []
-        for site in self.config.sites:
-            if site.controller_host == self.name:
-                units.extend(site.deployed_units)
-        return units
+    def _signal_handler(self, signum, frame):
+        """Called when SIGINT (Ctrl+C) or SIGTERM received"""
+        logger.info(f"Signal {signum} received, initiating graceful shutdown")
+        self._shutdown_event.set()
 
-    @property
-    def units_in_maintenance(self) -> list[str]:
-        units = []
-        for site in self.config.sites:
-            if site.controller_host == self.name:
-                units.extend(site.units_in_maintenance)
-        return units
+    def on_config_timer(self):
+        self.config.managed_sites = Config().get_sites()
 
-    def start_controlling(self):
-        self._terminated = False
-        self.planner.start_planning()
+    def on_fetch_timer(self):
+        self.refresh()
 
-    def stop_controlling(self):
-        self._terminated = True
-        self.planner.stop_planning()
+    def refresh(self):
+        """Walk cache and schedule fetches for stale entries"""
+        if self._shutdown_event.is_set():
+            logger.debug("Shutdown in progress, skipping refresh")
+            return
 
-    def startup(self):
-        self.start_controlling()
+        # Check if timer was cancelled (happens on shutdown)
+        if not self.fetch_timer.is_alive():
+            logger.info("Timer stopped, assuming shutdown")
+            return
 
-    def shutdown(self):
-        self.stop_controlling()
+        for site_name in [s.name for s in self.config.managed_sites]:
+            if site_name not in self.status_cache:
+                """
+                We have been assigned a new site to manage since last config load
+                """
+                self.status_cache[site_name] = {
+                    "units": {},
+                    "spec": None,
+                    "controller": None,
+                }
+            site_cache = self.status_cache[site_name]
+
+            # Check units
+            for unit_name, cached_value in site_cache["units"].items():
+                if cached_value.needs_refresh() and cached_value.fetcher is None:
+                    future = self.executor.submit(self._fetch_status, cached_value)
+                    cached_value.fetcher = future
+
+                    future.add_done_callback(
+                        lambda f,
+                        sn=site_name,
+                        cn=unit_name,
+                        cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
+                    )
+
+            # Check spec
+            if site_cache["spec"] is not None:
+                cached_value = site_cache["spec"]
+                if cached_value.needs_refresh() and cached_value.fetcher is None:
+                    future = self.executor.submit(self._fetch_status, cached_value)
+                    cached_value.fetcher = future
+
+                    future.add_done_callback(
+                        lambda f,
+                        sn=site_name,
+                        cn="spec",
+                        cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
+                    )
+
+            # Check controller
+            if site_cache["controller"] is not None:
+                cached_value = site_cache["controller"]
+                if cached_value.needs_refresh() and cached_value.fetcher is None:
+                    future = self.executor.submit(self._fetch_status, cached_value)
+                    cached_value.fetcher = future
+
+                    future.add_done_callback(
+                        lambda f,
+                        sn=site_name,
+                        cn="controller",
+                        cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
+                    )
+
+    def _fetch_status(self, cached_value: CachedValue) -> Any:
+        """Generic fetch for any component type - detects type from cached_value.api"""
+        api_type = type(
+            cached_value.api
+        ).__name__  # "UnitApi", "SpecApi", "ControllerApi"
+
+        try:
+            cached_value.last_attempt = datetime.now(timezone.utc)
+            response = asyncio.run(
+                cached_value.api.get(
+                    "controller_status"
+                    if isinstance(cached_value.api, ControllerApi)
+                    else "status"
+                )
+            )
+
+            if response.succeeded:
+                return response.value
+            else:
+                logger.error(f"{function_name()}: {response.errors}")
+                return BasicStatus(detected=False, powered=False, operational=False)
+        except Exception as e:
+            logger.error(f"Error fetching {api_type} status: {e}")
+            return BasicStatus(detected=False, powered=False, operational=False)
+
+    def status_from_dict(
+        self, api: SpecApi | ControllerApi | UnitApi, data: dict
+    ) -> Any:
+        from common.models.statuses import (
+            BasicStatus,
+            ControllerStatus,
+            FullUnitStatus,
+            SpecStatus,
+        )
+
+        expected_status_type = None
+        validated_status = None
+        match type(api).__name__:
+            case "UnitApi":
+                expected_status_type = FullUnitStatus
+            case "SpecApi":
+                expected_status_type = SpecStatus
+            case "ControllerApi":
+                expected_status_type = ControllerStatus
+            case _:
+                raise ValueError(f"Unknown API type: {type(api).__name__}")
+
+        try:
+            validated_status = expected_status_type.model_validate(data)
+        except Exception as e:
+            try:
+                validated_status = BasicStatus.model_validate(data)
+            except Exception as e2:
+                logger.error(
+                    f"Failed to validate status data for {type(api).__name__}: {e}; also failed BasicStatus: {e2}"
+                )
+                return BasicStatus(detected=False, powered=False, operational=False)
+
+        return validated_status
+
+    def _on_fetch_complete(
+        self,
+        future: Future,
+        site_name: str,
+        component_name: str,  # unit_name, "spec", or "controller"
+        cached_value: CachedValue,
+    ):
+        """Generic callback for any component type"""
+        api_type = type(cached_value.api).__name__
+
+        try:
+            status = future.result()
+            validated_status = self.status_from_dict(cached_value.api, status)
+            with self.lock:
+                cached_value.value = validated_status
+                cached_value.last_success = datetime.now(timezone.utc)
+                cached_value.fetcher = None
+                logger.debug(
+                    f"Updated cache for {site_name}:{component_name} ({api_type}) with '{type(cached_value.value).__name__}'"
+                )
+        except Exception as e:
+            logger.error(f"Error updating cache for {site_name}:{component_name}: {e}")
+            with self.lock:
+                cached_value.fetcher = None
 
     def status(self) -> CanonicalResponse:
-        ret = {}
+        """Returns statuses from cache"""
+        with self.lock:
+            ret = SitesStatus(timestamp=time_stamp(), sites={})
 
-        for site in self.controlled_sites:
-            ret[site.site_name] = {}
+            for site_name in [s.name for s in self.config.managed_sites]:
+                site_cache = self.status_cache[site_name]
 
-            if site.controlled_spec:
-                ret[site.site_name]["spec"] = site.controlled_spec.status or {
-                    "detected": False,
-                    "connected": False,
-                    "operational": False,
-                }
+                unit_statuses = {}
+                for unit_name, cached_value in site_cache["units"].items():
+                    if cached_value.value:
+                        unit_statuses[unit_name] = cached_value.value
+                        unit_statuses[unit_name].powered = self.power_switches[
+                            site_name
+                        ][unit_name].get_outlet_state("Computer")
 
-            ret[site.site_name]["units"] = {}
-            for unit_name in list(site.controlled_units.keys()):
-                ret[site.site_name]["units"][unit_name] = site.controlled_units[
-                    unit_name
-                ].status or ShortStatus(
-                    type="short",
-                    detected=False,
-                    powered=False,
-                    operational=False,
+                spec_status = site_cache["spec"].value if site_cache["spec"] else None
+
+                ret.sites[site_name] = SiteStatus(
+                    controller=ControllerStatus(
+                        powered=True,
+                        detected=True,
+                        operational=True,
+                    ),
+                    spec=spec_status,
+                    units=unit_statuses,
                 )
 
-        return CanonicalResponse(value=ret)
+            return CanonicalResponse(value=ret.model_dump())
 
-    def addressable(self, site_name: str, unit_name: str) -> CanonicalResponse:
-        if site_name not in [s.name for s in self.config.sites]:
-            return CanonicalResponse(errors=[f"Unknown site '{site_name}'"])
-
-        configured_site = [s for s in self.config.sites if s.name == site_name][0]
-        if unit_name not in configured_site.deployed_units:
-            return CanonicalResponse(
-                errors=[f"Unit '{site_name}:{unit_name}' not deployed"]
+    def endpoint_controller_status(self) -> CanonicalResponse:
+        """
+        Returns the controller's own status
+        """
+        return CanonicalResponse(
+            value=ControllerStatus(
+                powered=True,
+                detected=True,
+                operational=True,
             )
-
-        if unit_name in configured_site.units_in_maintenance:
-            return CanonicalResponse(
-                errors=[f"Unit '{site_name}:{unit_name}' is in maintenance mode"]
-            )
-
-        if site_name not in [s.name for s in self.config.sites]:
-            return CanonicalResponse(
-                errors=[f"Site '{site_name}' not managed by '{self.name}'"]
-            )
-
-        site = [s for s in self.config.sites if s.name == site_name][0]
-        if unit_name not in list(site.deployed_units):
-            return CanonicalResponse(
-                errors=[f"Unit '{site_name}:{unit_name}' not deployed"]
-            )
-
-        if unit_name in site.units_in_maintenance:
-            return CanonicalResponse(
-                errors=[f"Unit '{site_name}:{unit_name}' is in maintenance mode"]
-            )
-
-        return CanonicalResponse_Ok
-
-    def get_controlled_unit(
-        self, site_name: str, unit_name: str
-    ) -> ControlledUnit | None:
-        controlled_site = [
-            site for site in self.controlled_sites if site.site_name == site_name
-        ][0]
-        controlled_unit = controlled_site.controlled_units.get(unit_name)
-        return controlled_unit
+        )
 
     def endpoint_unit_status(self, site_name: str, unit_name: str) -> CanonicalResponse:
         """
@@ -507,43 +758,32 @@ class Controller:
         :param unit_name:
         :return:
         """
-        ret = self.addressable(site_name=site_name, unit_name=unit_name)
-        if not ret.succeeded:
-            return ret
-
-        controlled_unit = self.get_controlled_unit(
-            site_name=site_name, unit_name=unit_name
-        )
-
-        if controlled_unit and controlled_unit.status:
-            return CanonicalResponse(value=controlled_unit.status)
-        else:
+        if site_name not in self.status_cache:
+            return CanonicalResponse(errors=[f"no statuses for '{site_name=}'"])
+        if unit_name not in self.status_cache[site_name]["units"]:
             return CanonicalResponse(
-                value=ShortStatus(
-                    type="short",
-                    detected=False,
-                    powered=False,
-                    operational=False,
-                )
+                errors=[f"no status for '{unit_name=}' of '{site_name=}'"]
+            )
+
+        with self.lock:
+            return CanonicalResponse(
+                value=self.status_cache[site_name]["units"][unit_name].value
             )
 
     def endpoint_power_switch_status(
         self, site_name: str, unit_name: str
     ) -> CanonicalResponse:
-        ret = self.addressable(site_name=site_name, unit_name=unit_name)
-        if not ret.succeeded:
-            return ret
-
-        controlled_unit = self.get_controlled_unit(
-            site_name=site_name, unit_name=unit_name
-        )
-        if controlled_unit is None or controlled_unit.power_switch is None:
+        if (
+            site_name not in self.power_switches
+            or unit_name not in self.power_switches[site_name]
+        ):
             return CanonicalResponse(
-                errors=[f"power_switch for unit '{site_name}:{unit_name}' is None"]
+                errors=[f"no power_switch for {site_name=}, {unit_name=}"]
             )
+        power_switch = self.power_switches[site_name][unit_name]
 
         try:
-            status = controlled_unit.power_switch.status()
+            status = power_switch.status()
         except Exception as ex:
             return CanonicalResponse(errors=[f"exception: {ex}"])
         return CanonicalResponse(value=status)
@@ -551,22 +791,17 @@ class Controller:
     def endpoint_get_outlet(
         self, site_name: str, unit_name: str, outlet_name
     ) -> CanonicalResponse:
-        ret = self.addressable(site_name=site_name, unit_name=unit_name)
-        if not ret.succeeded:
-            return ret
-
-        controlled_unit = self.get_controlled_unit(
-            site_name=site_name, unit_name=unit_name
-        )
-        if controlled_unit is None or controlled_unit.power_switch is None:
+        if (
+            site_name not in self.power_switches
+            or unit_name not in self.power_switches[site_name]
+        ):
             return CanonicalResponse(
-                errors=[f"power_switch for unit '{site_name}:{unit_name}' is None"]
+                errors=[f"no power_switch for {site_name=}, {unit_name=}"]
             )
+        power_switch = self.power_switches[site_name][unit_name]
 
         try:
-            state = controlled_unit.power_switch.get_outlet_state(
-                outlet_name=outlet_name
-            )
+            state = power_switch.get_outlet_state(outlet_name=outlet_name)
         except ValueError as ex:
             return CanonicalResponse(errors=[f"exception: {ex}"])
         return CanonicalResponse(value=state)
@@ -578,32 +813,23 @@ class Controller:
         outlet_name: str,
         state: Literal["on", "off", "toggle"],
     ) -> CanonicalResponse:
-        ret = self.addressable(site_name=site_name, unit_name=unit_name)
-        if not ret.succeeded:
-            return ret
-
-        controlled_unit = self.get_controlled_unit(
-            site_name=site_name, unit_name=unit_name
-        )
-        if controlled_unit is None or controlled_unit.power_switch is None:
+        if (
+            site_name not in self.power_switches
+            or unit_name not in self.power_switches[site_name]
+        ):
             return CanonicalResponse(
-                errors=[f"power_switch for unit '{site_name}:{unit_name}' is None"]
+                errors=[f"no power_switch for {site_name=}, {unit_name=}"]
             )
+        power_switch = self.power_switches[site_name][unit_name]
 
         if state == "on":
-            controlled_unit.power_switch.set_outlet_state(
-                outlet_name=outlet_name, state=True
-            )
+            power_switch.set_outlet_state(outlet_name=outlet_name, state=True)
         elif state == "off":
-            controlled_unit.power_switch.set_outlet_state(
-                outlet_name=outlet_name, state=False
-            )
+            power_switch.set_outlet_state(outlet_name=outlet_name, state=False)
         elif state == "toggle":
-            controlled_unit.power_switch.toggle_outlet(outlet_name=outlet_name)
+            power_switch.toggle_outlet(outlet_name=outlet_name)
 
-        new_state = controlled_unit.power_switch.get_outlet_state(
-            outlet_name=outlet_name
-        )
+        new_state = power_switch.get_outlet_state(outlet_name=outlet_name)
         return CanonicalResponse(value=new_state)
 
     # async def execute_assigned_plan(self, ulid: str) -> CanonicalResponse:
@@ -616,7 +842,7 @@ class Controller:
     #     plan.run_folder = PathMaker.make_run_folder()
     #     os.makedirs(plan.run_folder, exist_ok=True)
     #     os.link(plan.file, os.path.join(plan.run_folder, "task"))
-    #     self.task_in_progress = plan
+    #     self.in_progress = plan
     #     asyncio.create_task(plan.execute(controller=self))
     #     return CanonicalResponse_Ok
 
@@ -631,29 +857,25 @@ class Controller:
         :return:
         """
         op = function_name()
-        if self.task_in_progress is None:
-            logger.error(f"{function_name}: no task_in_progress")
+        if self.in_progress is None:
+            logger.error(f"{function_name}: no in_progress")
 
-        if (
-            self.task_in_progress
-            and notification.task_id != self.task_in_progress.settings.ulid
-        ):
+        if self.in_progress and notification.task_id != self.in_progress.ulid:
             logger.error(
-                f"ignored notification for task '{notification.task_id}' (task in progress '{self.task_in_progress.settings.ulid}"
+                f"ignored notification for plan/batch '{notification.task_id}' ('{self.in_progress.ulid=}')"
             )
             return
 
         src = notification.src
         assert (
-            self.task_in_progress is not None
-            and self.task_in_progress.settings is not None
-            and self.task_in_progress.settings.run_folder is not None
+            self.in_progress is not None
+            and self.in_progress.run_folder is not None
             and notification.initiator.hostname is not None
         )
         dst = (
-            Path(self.task_in_progress.settings.run_folder)
+            Path(self.in_progress.run_folder)
             / notification.initiator.hostname
-            / notification.link
+            / notification.subpath
         )
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
@@ -662,42 +884,39 @@ class Controller:
         except Exception as e:
             logger.error(f"{op}: failed to symlink '{src}' -> '{dst}' (error: {e})")
 
-    async def activity_notification_endpoint(self, notification: ActivityNotification):
+    async def notifications_endpoint(self, data: UiUpdateRequest):
         """
-        Listens for activity notifications (from units, specs and self) and pushes them via WebSocket
-        to all the registered GUIs.
-
-        :param notification:
-        :return:
+        Listens for notifications (from units, specs and self) and pushes them to Django server
+        for dissemination to GUI clients.
         """
-        if not self.activity_notification_clients:
-            logger.info(f"{function_name()}: no clients")
-            return
-
-        disconnected = []
-        for ws in self.activity_notification_clients:
-            try:
-                logger.info(f"{function_name()}: sending to {ws} ...")
-                await ws.send_json(notification.model_dump())
-            except WebSocketDisconnect:
-                disconnected.append(ws)
-
-        for ws in disconnected:
-            self.activity_notification_clients.remove(ws)
-
-    async def activity_notification_client(self, websocket: WebSocket):
-        """Receives websocket connections from web GUI"""
-        await websocket.accept()
-        self.activity_notification_clients.add(websocket)
-        logger.info(f"new websocket from {websocket.client}")
+        op = function_name()
         try:
-            while True:
-                _ = await websocket.receive_text()
-        except WebSocketDisconnect:
-            logger.info(f"websocket {websocket.client} disconnected")
-        finally:
-            self.activity_notification_clients.remove(websocket)
-            # await websocket.close()
+            logger.info(f"{op}: Received notification from {data.initiator.hostname}")
+            logger.debug(f"{op}: Full data: {data.model_dump()}")
+        except Exception as e:
+            logger.error(f"{op}: Error logging notification: {e}")
+
+        django_url = (
+            f"http://{Const.DJANGO_HOST}:{Const.DJANGO_PORT}/api/notifications/"
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.post(
+                    django_url,
+                    json=data.model_dump(),
+                    headers={"Content-Type": "application/json"},
+                )
+                if response.status_code == 200:
+                    logger.debug(f"{op}: Notification sent to Django successfully")
+                else:
+                    logger.warning(
+                        f"{op}: Django returned status {response.status_code}: {response.text}"
+                    )
+        except httpx.RequestError as e:
+            logger.error(f"{op}: Failed to send notification to Django: {e}")
+        except Exception as e:
+            logger.error(f"{op}: Unexpected error sending notification to Django: {e}")
 
     def endpoint_config_get_users(self):
         return Config().get_users()
@@ -705,8 +924,10 @@ class Controller:
     def endpoint_config_get_user(self, user_name: str):
         return Config().get_user(user_name)
 
-    def endpoint_config_get_unit(self, unit_name: str) -> CanonicalResponse:
-        unit_config = Config().get_unit(unit_name)
+    def endpoint_config_get_unit(
+        self, site_name: str, unit_name: str
+    ) -> CanonicalResponse:
+        unit_config = Config().get_unit(site_name, unit_name)
         # logger.debug(f"{function_name}: {unit_name=}, {unit_config=}")
         return (
             CanonicalResponse(value=unit_config)
@@ -714,14 +935,41 @@ class Controller:
             else CanonicalResponse(errors=[f"Unit '{unit_name}' not found"])
         )
 
+    def endpoint_config_sites(self) -> CanonicalResponse:
+        return CanonicalResponse(value=Config().get_sites())
+
     def endpoint_config_set_unit(
-        self, unit_name: str, unit_conf: UnitConfig
+        self, site_name: str, unit_name: str, unit_conf: UnitConfig
     ) -> CanonicalResponse:
-        Config().set_unit(unit_name, unit_conf)
+        Config().set_unit(site_name, unit_name, unit_conf)
         return CanonicalResponse_Ok
 
     def endpoint_config_get_thar_filters(self):
         return Config().get_specs().wheels["ThAr"].filters
+
+    def startup(self):
+        pass
+
+    def shutdown(self):
+        """Gracefully shutdown all resources"""
+        if self._shutdown_event.is_set():
+            return  # Already shutting down
+
+        logger.info("Controller shutdown initiated")
+        self._shutdown_event.set()
+
+        # Stop timers
+        if hasattr(self, "config_timer") and self.config_timer:
+            self.config_timer.cancel()
+        if hasattr(self, "fetch_timer") and self.fetch_timer:
+            self.fetch_timer.cancel()
+
+        # Shutdown executor gracefully
+        if hasattr(self, "executor"):
+            logger.info("Waiting for in-flight tasks to complete...")
+            self.executor.shutdown(wait=True)
+
+        logger.info("Controller shutdown complete")
 
     @property
     def api_router(self) -> APIRouter:
@@ -747,12 +995,17 @@ class Controller:
             endpoint=self.endpoint_config_get_user,
         )
         router.add_api_route(
-            base_path + "/config/get_unit/{unit_name}",
+            base_path + "/config/get_unit/{site_name}/{unit_name}",
             tags=[tag],
             endpoint=self.endpoint_config_get_unit,
         )
         router.add_api_route(
-            base_path + "/config/set_unit/{unit_name}",
+            base_path + "/config/sites",
+            tags=[tag],
+            endpoint=self.endpoint_config_sites,
+        )
+        router.add_api_route(
+            base_path + "/config/set_unit/{site_name}/{unit_name}",
             tags=[tag],
             endpoint=self.endpoint_config_set_unit,
         )
@@ -769,6 +1022,12 @@ class Controller:
             endpoint=self.endpoint_unit_status,
         )
 
+        tag = "Controller"
+        router.add_api_route(
+            base_path + "/controller_status",
+            tags=[tag],
+            endpoint=self.endpoint_controller_status,
+        )
         # Power switch routes
         tag = "Power Switch"
         router.add_api_route(
@@ -806,20 +1065,16 @@ class Controller:
             endpoint=self.task_acquisition_path_notification,
         )
         router.add_api_route(
-            base_path + "/activity_notification",
+            base_path + "/notifications",
             methods=["PUT"],
-            endpoint=self.activity_notification_endpoint,
+            endpoint=self.notifications_endpoint,
         )
+        # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
+        # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)ned_plan,
+
+        # router.add_api_route(
+        #     plans_base + "/execute_assigned_plan",   base_path + "/task_acquisition_path_notification",
+        #     tags=[tag],"PUT"],
+        #     endpoint=self.execute_assigned_plan,            tags=[tag],
+
         return router
-
-
-def startup():
-    Controller().startup()
-
-
-def shutdown():
-    Controller().shutdown()
-
-
-if __name__ == "__main__":
-    Controller().startup()
