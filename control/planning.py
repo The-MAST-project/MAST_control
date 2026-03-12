@@ -2,14 +2,13 @@ import logging
 import shutil
 from enum import StrEnum
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock
+from typing import Callable
 
 from pydantic import BaseModel
-from watchdog.events import FileSystemEvent
 
-from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.canonical import CanonicalResponse
 from common.const import Const
-from common.fswatcher import FsWatcher
 from common.mast_logging import init_log
 from common.models.plans import Plan
 from common.paths import PathMaker
@@ -35,28 +34,16 @@ class PlansFolder:
 
     def __init__(self, folder_name: str):
         self.folder_name = folder_name
-        self.path = Path(PathMaker.make_plans_folder()) / self.folder_name
+        self.folder_path = Path(PathMaker.make_plans_folder()) / self.folder_name
         try:
-            self.path.mkdir(parents=True, exist_ok=True)
+            self.folder_path.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            logger.error(f"could not create '{self.path}' (error: {e})")
+            logger.error(f"could not create '{self.folder_path}' (error: {e})")
             raise
 
         self.lock = Lock()
 
         self.refresh()
-
-        self.watcher: FsWatcher = FsWatcher(
-            folder=str(self.path),
-            handlers={
-                "created": self.on_created,
-                "modified": self.on_modified,
-                "deleted": self.on_deleted,
-            },
-        )
-        self.thread = Thread(
-            target=self.watcher.run, name=f"plans-{self.folder_name}-thread"
-        )
 
     def refresh(self):
         """
@@ -64,45 +51,26 @@ class PlansFolder:
         :return:
         """
         with self.lock:
-            plan_files = Path(self.path).glob(Const.PlanFileNamePattern)
+            paths = Path(self.folder_path).glob(Const.PlanFileNamePattern)
             self.plans = []
-            for plan_file in plan_files:
+            for path in paths:
                 try:
-                    plan = Plan.from_toml_file(str(plan_file))
+                    plan = Plan.from_toml_file(str(path))
+                    plan.full_path = path
                 except Exception as e:
-                    logger.error(f"could not load plan from {plan_file}, error: {e}")
+                    logger.error(f"could not load plan from {path}, error: {e}")
                     continue
                 self.plans.append(plan)
             logger.info(f"loaded {len(self.plans)} plans from '{self.folder_name}'")
 
     def start_watching(self):
-        self.thread.start()
+        # self.thread.start()
+        pass
 
     def stop_watching(self):
-        self.watcher.stop()
-        self.thread.join()
-
-    def on_created(self, _: FileSystemEvent):
-        """
-        A new file just materialized, refresh the list of plans
-        """
-        self.refresh()
-
-    def on_modified(self, event: FileSystemEvent):
-        """
-        A plan file was modified, update the list member with the same ulid with the new data
-        :param event:
-        :return:
-        """
-        self.refresh()
-
-    def on_deleted(self, event: FileSystemEvent):
-        """
-        A plan file was deleted, scan the folder and find out which ULID was deleted
-        :param event:
-        :return:
-        """
-        self.refresh()
+        # self.watcher.stop()
+        # self.thread.join()
+        pass
 
 
 class PlanState(StrEnum):
@@ -112,6 +80,8 @@ class PlanState(StrEnum):
     completed = "completed"
     expired = "expired"
     postponed = "postponed"
+    deleted = "deleted"
+    canceled = "canceled"
 
 
 class PlansResponse(BaseModel):
@@ -122,6 +92,8 @@ class PlansResponse(BaseModel):
     failed: list[Plan]
     expired: list[Plan]
     postponed: list[Plan]
+    deleted: list[Plan]
+    canceled: list[Plan]
 
 
 class Planner:
@@ -137,6 +109,8 @@ class Planner:
         self.completed_folder = _make_folder("completed")
         self.postponed_folder = _make_folder("postponed")
         self.in_progress_folder = _make_folder("in-progress")
+        self.deleted_folder = _make_folder("deleted")
+        self.canceled_folder = _make_folder("canceled")
 
         self.plan_folders = [
             self.pending_folder,
@@ -145,9 +119,98 @@ class Planner:
             self.in_progress_folder,
             self.completed_folder,
             self.postponed_folder,
+            self.deleted_folder,
+            self.canceled_folder,
         ]
         # ensure non-None typing for downstream code
         self.plan_in_progress = None
+
+        self.transitions: dict[PlanState, list[tuple[PlanState, Callable]]] = {
+            PlanState.pending: [
+                (PlanState.in_progress, self.do_execute_plan),
+                (PlanState.postponed, self.do_postpone_plan),
+                (PlanState.deleted, self.do_delete_plan),
+            ],
+            PlanState.in_progress: [
+                (PlanState.canceled, self.do_cancel_plan),
+            ],
+            PlanState.postponed: [
+                (PlanState.pending, self.do_revive_plan),
+            ],
+            PlanState.deleted: [
+                (PlanState.pending, self.do_revive_plan),
+            ],
+            PlanState.expired: [
+                (PlanState.pending, self.do_revive_plan),
+            ],
+            PlanState.failed: [
+                (PlanState.pending, self.do_revive_plan),
+            ],
+            PlanState.completed: [
+                (PlanState.pending, self.do_revive_plan),
+            ],
+            PlanState.canceled: [
+                (PlanState.pending, self.do_revive_plan),
+            ],
+        }
+
+        self.lock = Lock()
+
+    def transition_to_postponed(self, ulid: str) -> CanonicalResponse:
+        return self.transition_plan(ulid, PlanState.postponed)
+
+    def transition_to_pending(self, ulid: str) -> CanonicalResponse:
+        return self.transition_plan(ulid, PlanState.pending)
+
+    def transition_to_deleted(self, ulid: str) -> CanonicalResponse:
+        return self.transition_plan(ulid, PlanState.deleted)
+
+    def transition_to_in_progress(self, ulid: str) -> CanonicalResponse:
+        return self.transition_plan(ulid, PlanState.in_progress)
+
+    def transition_to_canceled(self, ulid: str) -> CanonicalResponse:
+        return self.transition_plan(ulid, PlanState.canceled)
+
+    def transition_to_completed(self, ulid: str) -> CanonicalResponse:
+        return self.transition_plan(ulid, PlanState.completed)
+
+    def transition_plan(self, ulid: str, target_state: PlanState) -> CanonicalResponse:
+        result = self.locate_plan(ulid)
+        if result is None:
+            return CanonicalResponse(errors=[f"no matching plan for {ulid=}"])
+
+        current_state, plan = result
+        transitions = self.transitions.get(current_state, [])
+        for state, action in transitions:
+            if state == target_state:
+                try:
+                    action(plan)
+                except Exception as e:
+                    logger.error(
+                        f"error transitioning plan {ulid} to state {target_state}: {e}"
+                    )
+                    return CanonicalResponse(
+                        errors=[
+                            f"error transitioning plan {ulid} to state {target_state}"
+                        ]
+                    )
+                finally:
+                    self.refresh()
+        else:
+            logger.warning(
+                f"invalid transition from {current_state} to {target_state} for plan {ulid}"
+            )
+
+        return CanonicalResponse(
+            errors=[
+                f"invalid transition from {current_state} to {target_state} for plan {ulid}"
+            ]
+        )
+
+    def refresh(self):
+        with self.lock:
+            for folder in self.plan_folders:
+                folder.refresh()
 
     def get_plans(
         self, ulid: str | None = None, state: PlanState | None = None
@@ -165,6 +228,8 @@ class Planner:
             PlanState.failed: self.failed_folder,
             PlanState.completed: self.completed_folder,
             PlanState.expired: self.expired_folder,
+            PlanState.deleted: self.deleted_folder,
+            PlanState.canceled: self.canceled_folder,
         }
 
         assert self.plan_folders is not None
@@ -190,67 +255,65 @@ class Planner:
                 in_progress=self.in_progress_folder.plans,
                 completed=self.completed_folder.plans,
                 postponed=self.postponed_folder.plans,
+                deleted=self.deleted_folder.plans,
+                canceled=self.canceled_folder.plans,
             )
         )
 
-    async def postpone_plan(self, ulid: str) -> CanonicalResponse:
-        matching_plans = [p for p in self.pending_folder.plans if p.ulid == ulid]
-        if len(matching_plans) == 0:
-            return CanonicalResponse(errors=[f"no matching plan for {ulid=}"])
+    def locate_plan(self, ulid: str) -> tuple[PlanState, Plan] | None:
+        with self.lock:
+            for folder in self.plan_folders:
+                matching_plans = [p for p in folder.plans if p.ulid == ulid]
+                if len(matching_plans) > 0:
+                    return (PlanState(folder.folder_name), matching_plans[0])
+        return None
 
-        plan = matching_plans[0]
-        self.pending_folder.plans.remove(plan)
-        self.postponed_folder.plans.append(plan)
+    def do_cancel_plan(self, plan: Plan):
+        assert plan is not None and plan.full_path is not None
+        new_path = self.canceled_folder.folder_path / plan.full_path.name
 
-        assert plan.file is not None
         logger.debug(
-            f"postponing plan {ulid=}, moving {str(Path(plan.file))} to {str(self.postponed_folder.path / Path(plan.file).name)}"
+            f"canceling plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
         )
-        shutil.move(
-            str(Path(plan.file)),
-            str(self.postponed_folder.path / Path(plan.file).name),
+        shutil.move(str(plan.full_path), str(new_path))
+
+    def do_postpone_plan(self, plan: Plan):
+        assert plan is not None and plan.full_path is not None
+        new_path = self.postponed_folder.folder_path / plan.full_path.name
+
+        logger.debug(
+            f"postponing plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
         )
-        return CanonicalResponse_Ok
+        shutil.move(str(plan.full_path), str(new_path))
 
-    async def revive_plan(self, ulid: str) -> CanonicalResponse:
-        for folder in self.plan_folders:
-            matching_plans = [p for p in folder.plans if p.ulid == ulid]
-            if len(matching_plans) > 0:
-                plan = matching_plans[0]
-                folder.plans.remove(plan)
-                self.pending_folder.plans.append(plan)
-                assert plan.file is not None
-                logger.debug(
-                    f"reviving plan {ulid=}, moving {str(Path(plan.file))} to {str(self.pending_folder.path / Path(plan.file).name)}"
-                )
-                try:
-                    shutil.move(
-                        str(Path(plan.file)),
-                        str(self.pending_folder.path / Path(plan.file).name),
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"could not move plan file for {ulid=} to pending folder, error: {e}"
-                    )
-                    return CanonicalResponse(
-                        errors=[
-                            f"could not move plan file for {ulid=} to pending folder"
-                        ]
-                    )
-        return CanonicalResponse_Ok
+    def do_revive_plan(self, plan: Plan):
+        assert plan is not None and plan.full_path is not None
+        new_path = self.pending_folder.folder_path / plan.full_path.name
 
-    async def delete_plan(self, ulid: str) -> CanonicalResponse:
-        for folder in self.plan_folders:
-            matching_plans = [p for p in folder.plans if p.ulid == ulid]
-            if len(matching_plans) > 0:
-                plan = matching_plans[0]
-                folder.plans.remove(plan)
-                self.pending_folder.plans.append(plan)
-                assert plan.file is not None
-                logger.debug(f"deleting plan {ulid=}, removing {str(Path(plan.file))}")
-                shutil.rmtree(str(Path(plan.file)), ignore_errors=True)
-                return CanonicalResponse_Ok
-        return CanonicalResponse(errors=[f"no matching plan for {ulid=}"])
+        logger.debug(
+            f"reviving plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
+        )
+        shutil.move(str(plan.full_path), str(new_path))
+
+    def do_delete_plan(self, plan: Plan):
+        assert plan is not None and plan.full_path is not None
+        new_path = self.deleted_folder.folder_path / plan.full_path.name
+
+        logger.debug(
+            f"deleting plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
+        )
+        shutil.move(str(plan.full_path), str(new_path))
+
+    def do_execute_plan(self, plan: Plan):
+        assert plan is not None and plan.full_path is not None
+        new_path = self.in_progress_folder.folder_path / plan.full_path.name
+
+        logger.debug(
+            f"executing plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
+        )
+        shutil.move(str(plan.full_path), str(new_path))
+
+        # TBD: here we would trigger the actual execution of the plan, for now we just move the file and update the lists
 
     def start_planning(self):
         """
@@ -279,18 +342,30 @@ class Planner:
         router.add_api_route(
             plans_base + "/postpone",
             tags=[tag],
-            endpoint=self.postpone_plan,
+            endpoint=self.transition_to_postponed,
             methods=["POST"],
         )
         router.add_api_route(
             plans_base + "/revive",
             tags=[tag],
-            endpoint=self.revive_plan,
+            endpoint=self.transition_to_pending,
             methods=["POST"],
         )
         router.add_api_route(
             plans_base + "/delete",
             tags=[tag],
-            endpoint=self.delete_plan,
+            endpoint=self.transition_to_deleted,
             methods=["DELETE"],
+        )
+        router.add_api_route(
+            plans_base + "/execute",
+            tags=[tag],
+            endpoint=self.transition_to_in_progress,
+            methods=["POST"],
+        )
+        router.add_api_route(
+            plans_base + "/cancel",
+            tags=[tag],
+            endpoint=self.transition_to_canceled,
+            methods=["POST"],
         )
