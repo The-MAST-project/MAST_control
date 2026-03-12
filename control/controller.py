@@ -12,7 +12,7 @@ from typing import Any, Literal, Set
 
 import httpx
 from fastapi import APIRouter, WebSocket
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from common.activities import Activities, ControllerActivities
 from common.api import ControllerApi, SpecApi, UnitApi
@@ -28,6 +28,7 @@ from common.models.statuses import (
     ControllerStatus,
     SitesStatus,
     SiteStatus,
+    SpecStatus,
 )
 from common.notifications import UiUpdateRequest
 from common.tasks.models import TaskAcquisitionPathNotification
@@ -408,6 +409,11 @@ class Controller(Activities):
         self.activity_notification_clients: Set[WebSocket] = set()
         self.hostname = socket.gethostname().split(".")[0]
 
+        self.preferred_site = None
+        match self.hostname:
+            case "mast-wis-control":
+                self.preferred_site = "ns"
+
         self.config = ControllerConfig()
         sites = Config().get_sites()
         for site in sites:
@@ -724,17 +730,43 @@ class Controller(Activities):
                             site_name
                         ][unit_name].get_outlet_state("Computer")
 
-                spec_status = site_cache["spec"].value if site_cache["spec"] else None
-
-                ret.sites[site_name] = SiteStatus(
-                    controller=ControllerStatus(
-                        powered=True,
-                        detected=True,
-                        operational=True,
-                    ),
-                    spec=spec_status,
-                    units=unit_statuses,
+                spec_status = (
+                    site_cache["spec"].value
+                    if site_cache["spec"]
+                    else SpecStatus(
+                        detected=False,
+                        powered=False,
+                        operational=False,
+                        why_not_operational=["No status available"],
+                    )
                 )
+
+                try:
+                    ret.sites[site_name] = SiteStatus(
+                        controller=ControllerStatus(
+                            powered=True,
+                            detected=True,
+                            operational=True,
+                        ),
+                        spec=spec_status,
+                        units=unit_statuses,
+                    )
+                except ValidationError as e:
+                    logger.error(f"Validation error for site '{site_name}': {e}")
+                    ret.sites[site_name] = SiteStatus(
+                        controller=ControllerStatus(
+                            powered=True,
+                            detected=True,
+                            operational=True,
+                        ),
+                        spec=SpecStatus(
+                            detected=False,
+                            powered=False,
+                            operational=False,
+                            why_not_operational=[f"Validation error: {e}"],
+                        ),
+                        units=unit_statuses,
+                    )
 
             return CanonicalResponse(value=ret.model_dump())
 
