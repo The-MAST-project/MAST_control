@@ -30,7 +30,7 @@ from common.models.statuses import (
     SiteStatus,
     SpecStatus,
 )
-from common.notifications import UiUpdateRequest
+from common.notifications import UiUpdateNotifications
 from common.tasks.models import TaskAcquisitionPathNotification
 from common.utils import (
     RepeatTimer,
@@ -916,7 +916,7 @@ class Controller(Activities):
         except Exception as e:
             logger.error(f"{op}: failed to symlink '{src}' -> '{dst}' (error: {e})")
 
-    async def notifications_endpoint(self, data: UiUpdateRequest):
+    async def notifications_endpoint(self, data: UiUpdateNotifications):
         """
         Listens for notifications (from units, specs and self) and pushes them to Django server
         for dissemination to GUI clients.
