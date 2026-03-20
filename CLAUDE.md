@@ -110,6 +110,48 @@ The unit startup (`app.py`) ensures `PWI4.exe`, `PWShutter.exe`, and `ps3cli.exe
 
 `Notifier` / `UiUpdateNotifications` push WebSocket events to the Django GUI. The `NotificationInitiator` is auto-detected from hostname convention: `mast-<site>-control`, `mast-<site>-spec`, or `mastXX` (unit).
 
+## Plans (`common/models/plans.py`, `control/planning.py`)
+
+Plans are observation jobs stored as TOML files named `PLAN_<ULID>.toml`. State is represented by which **subfolder** the file lives in under the plans directory — transitions physically move the file.
+
+### States and allowed transitions
+```
+pending → in-progress → completed
+                      → failed
+        → postponed
+        → deleted
+expired / failed / completed / canceled / postponed / deleted → pending  (revive)
+in-progress → canceled
+```
+
+`Planner` (singleton) owns one `PlansFolder` per state. File-system watching is **not yet implemented** — folders are only refreshed explicitly after each transition.
+
+### `Plan` model fields
+- `ulid` — auto-generated ULID, also encoded in the filename; enforced on load
+- `target` — celestial target
+- `spec_assignment` — `SpectrographModel` describing the spectrograph configuration
+- `requested_units` / `allocated_units` — unit names involved
+- `quorum` — minimum operational units required (default: 1)
+- `timeout_to_guiding` — seconds to wait for all units to reach guiding (default: 600)
+- `autofocus`, `too` (Target of Opportunity), `approved`, `production`
+- `constraints` — scheduling constraints
+- `events` — audit log appended back into the TOML file as `[[events]]`
+
+### Execution flow (`Plan.execute()`)
+Phases tracked as `AssignmentActivities` bitflags:
+1. **Probing** — checks units and spec are detected and operational (quorum enforced; relaxed in non-production/debug mode)
+2. **Dispatching** — sends assignments to all operational units concurrently via `asyncio.gather`
+3. **WaitingForGuiding** — polls unit status every 20 s until all committed units report `UnitActivities.Guiding`, or `timeout_to_guiding` expires
+4. **ExposingSpec** — sends assignment to spectrograph, polls every 20 s until spec returns to `Idle`
+
+Any phase failure calls `Plan.abort()` which sends abort to all committed units and the spec.
+
+### Plan API routes (under `/mast/api/v1/control/plans/`)
+`GET /get`, `POST /execute`, `POST /postpone`, `POST /revive`, `POST /cancel`, `DELETE /delete`
+
+### Utility
+Run `python common/models/plans.py <plan-file.toml>` to parse and dump a plan as JSON.
+
 ## Linting
 
 `MAST_unit` uses `ruff` (configured in `pyproject.toml`): line length 125, Python 3.12 target, Black-compatible formatter. Run with:
