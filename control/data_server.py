@@ -14,7 +14,7 @@ from common.canonical import CanonicalResponse
 from common.config import Config
 from common.const import Const
 from common.mast_logging import init_log
-from control.rewrites import rewrite_mast_share_url
+from common.proxy import ProxyContext
 
 logger = logging.getLogger("mast.control.data_server")
 init_log(logger)
@@ -103,6 +103,7 @@ class DataServer:
             )
         controller_host = site.controller_host
         controller_ipaddr = socket.gethostbyname(controller_host)
+        proxy = ProxyContext.from_request(request)
 
         for date_dir in date_dirs:
             autofocus_dir = date_dir / "Autofocus"
@@ -119,10 +120,9 @@ class DataServer:
                 if not fits_files:
                     fits_files = [f.name for f in session_dir.glob("*.fits")]
 
-                # folder_url = f"http://{controller_ipaddr}:8008/{unit_name}/{date_dir.name}/Autofocus/{session_number}"
-                folder_url = rewrite_mast_share_url(
-                    request,
+                folder_url = proxy.rewrite(
                     f"http://{controller_ipaddr}:8008/{unit_name}/{date_dir.name}/Autofocus/{session_number}",
+                    base="/mast-share/",
                 )
 
                 fits_files = (
