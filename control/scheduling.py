@@ -1,16 +1,15 @@
 import logging
-from datetime import date, datetime
-from typing import cast
-
-from controller import Controller
-from planning import Plan, Planner, PlanState
+from datetime import datetime
+from typing import Self, cast
 
 from common.config import Config
 from common.mast_logging import init_log
 from common.models.batches import Batch
-from common.models.calibration import CalibrationSettings
 from common.models.constraints import TimeWindow
 from common.utils import function_name
+
+from .controller import Controller
+from .planning import Plan, Planner, PlanState
 
 logger = logging.getLogger("scheduling")
 init_log(logger)
@@ -90,9 +89,7 @@ class Scheduler:
     def make_predicted_batches(self) -> list[Batch]:
         return []
 
-    def filter_by_time_window(
-        self, plans: list[Plan], evaluated_time_window: TimeWindow
-    ) -> list[Plan]:
+    def filter_by_time_window(self, evaluated_time_window: TimeWindow) -> Self:
         """
         Eliminate plans that cannot be executed within their specified time windows.
         :param plans: the list of plans to filter
@@ -104,10 +101,10 @@ class Scheduler:
             logger.warning(
                 f"{function_name()}: evaluated_time_window is missing start or end, skipping time window filtering"
             )
-            return plans
+            return self
 
         ret = []
-        for plan in plans:
+        for plan in self.plans:
             if not plan.constraints or not plan.constraints.time_window:
                 ret.append(plan)
                 continue
@@ -125,11 +122,9 @@ class Scheduler:
             ):
                 ret.append(plan)
 
-        return ret
+        return self
 
-    def filter_by_visibility_and_airmass_from_site(
-        self, plans: list[Plan], evaluated_time_window: TimeWindow
-    ) -> list[Plan]:
+    def filter_by_visibility_and_airmass_from_site(self) -> Self:
         """
         Eliminate plans that cannot be executed on the specified day due to visibility constraints.
         :param plans: the list of plans to filter
@@ -145,7 +140,7 @@ class Scheduler:
         site = self.controller.preferred_site
         # TODO: per/target check for visibility and airmass constraints within the site's observing window
         ret: list[Plan] = []
-        for plan in [p for p in plans if p.target is not None]:
+        for plan in [p for p in self.plans if p.target is not None]:
             target = plan.target
             if target.ra_hours is None or target.dec_degrees is None:
                 logger.warning(
@@ -154,54 +149,4 @@ class Scheduler:
                 continue
 
             ret.append(plan)
-        return ret
-
-
-def make_batch(plans: list[Plan]) -> Batch:
-    """
-    Make a batch out of the given plans.
-    :param plans: the list of plans to include in the batch
-    :return: a Batch object containing the given plans and duration estimations
-    """
-    batch = Batch(plans=plans)
-
-    predicted_autofocus_duration = 180 if any(plan.autofocus for plan in plans) else 0
-
-    batch.number_of_exposures = max(
-        plan.spec.number_of_exposures
-        for plan in plans
-        if plan.spec.number_of_exposures is not None
-    )
-    batch.exposure_duration = max(
-        plan.spec.exposure_duration
-        for plan in plans
-        if plan.spec.exposure_duration is not None
-    )
-    batch.calibration = CalibrationSettings(lamp_on=False, filter=None)
-    max_density = 0
-    max_timeout_to_guiding = 0
-    for plan in plans:
-        if plan.timeout_to_guiding and plan.timeout_to_guiding > max_timeout_to_guiding:
-            max_timeout_to_guiding = plan.timeout_to_guiding
-
-        calibration = plan.spec.calibration
-        if calibration is None:
-            continue
-
-        if calibration.lamp_on:
-            batch.calibration.lamp_on = True
-            if calibration.filter is not None:
-                density = (
-                    int(calibration.filter.replace("ND", ""))
-                    if calibration.filter.startswith("ND")
-                    else 0
-                )
-                if density > max_density:
-                    max_density = density
-                    batch.calibration.filter = calibration.filter
-    batch.predicted_duration = (
-        predicted_autofocus_duration
-        + max_timeout_to_guiding
-        + batch.exposure_duration * batch.number_of_exposures
-    )
-    return batch
+        return self

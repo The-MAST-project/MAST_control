@@ -976,8 +976,8 @@ class Controller(Activities):
         Config().set_unit(site_name, unit_name, unit_conf)
         return CanonicalResponse_Ok
 
-    def endpoint_config_get_thar_filters(self):
-        return Config().get_specs().wheels["ThAr"].filters
+    def endpoint_config_get_thar_filters(self) -> CanonicalResponse:
+        return CanonicalResponse(value=Config().get_thar_filters())
 
     def startup(self):
         pass

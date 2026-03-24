@@ -5,13 +5,20 @@ from pathlib import Path
 from threading import Lock
 from typing import Callable
 
-from pydantic import BaseModel
+import tomlkit
+import ulid
+from pydantic import BaseModel, Field, ValidationError
 
-from common.canonical import CanonicalResponse
+from common.canonical import CanonicalResponse, CanonicalResponse_Ok
+from common.config import Config
 from common.const import Const
 from common.mast_logging import init_log
+from common.models.events import EventModel
+from common.models.constraints import ConstraintsModel, RepeatsModel
 from common.models.plans import Plan
+from common.models.spectrographs import SpectrographModel
 from common.paths import PathMaker
+from common.utils import function_name
 
 logger = logging.getLogger("planning")
 init_log(logger)
@@ -59,7 +66,9 @@ class PlansFolder:
                     plan.full_path = path
                 except Exception as e:
                     logger.error(f"could not load plan from {path}, error: {e}")
-                    continue
+                    raise ValidationError(
+                        f"could not load plan from {path}, error: {e}"
+                    ) from e
                 self.plans.append(plan)
             logger.info(f"loaded {len(self.plans)} plans from '{self.folder_name}'")
 
@@ -74,6 +83,7 @@ class PlansFolder:
 
 
 class PlanState(StrEnum):
+    submitted = "submitted"
     pending = "pending"
     in_progress = "in-progress"
     failed = "failed"
@@ -86,23 +96,57 @@ class PlanState(StrEnum):
 
 class PlansResponse(BaseModel):
     maintaining_controller: str
-    in_progress: list[Plan]
-    completed: list[Plan]
-    pending: list[Plan]
-    failed: list[Plan]
-    expired: list[Plan]
-    postponed: list[Plan]
-    deleted: list[Plan]
-    canceled: list[Plan]
+    submitted: list[Plan] = []
+    in_progress: list[Plan] = []
+    completed: list[Plan] = []
+    pending: list[Plan] = []
+    failed: list[Plan] = []
+    expired: list[Plan] = []
+    postponed: list[Plan] = []
+    deleted: list[Plan] = []
+    canceled: list[Plan] = []
+
+
+class NewPlanTemplate(BaseModel):
+    ulid: str
+    owner: str | None = None
+    merit: int = 1
+    timeout_to_guiding: float = 600
+    autofocus: bool = False
+    too: bool = False
+    approved: bool = False
+    production: bool = True
+    quorum: int = 1
+    requested_units: list[str] = []
+    target: dict = Field(default_factory=lambda: {
+        "ra_hours": None,
+        "dec_degrees": None,
+        "requested_exposure_duration": None,
+        "requested_number_of_exposures": 1,
+        "max_exposure_duration": None,
+        "repeats": RepeatsModel().model_dump(),
+    })
+    spec_assignment: dict = Field(default_factory=lambda: SpectrographModel().model_dump())
+    constraints: dict = Field(default_factory=lambda: ConstraintsModel().model_dump())
+    filter_options: list[str] = []
 
 
 class Planner:
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, controller):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self, controller):
         self.controller = controller
 
         def _make_folder(name: str) -> PlansFolder:
             return PlansFolder(folder_name=name)
 
+        self.submitted_folder = _make_folder("submitted")
         self.pending_folder = _make_folder("pending")
         self.expired_folder = _make_folder("expired")
         self.failed_folder = _make_folder("failed")
@@ -113,6 +157,7 @@ class Planner:
         self.canceled_folder = _make_folder("canceled")
 
         self.plan_folders = [
+            self.submitted_folder,
             self.pending_folder,
             self.expired_folder,
             self.failed_folder,
@@ -126,6 +171,9 @@ class Planner:
         self.plan_in_progress = None
 
         self.transitions: dict[PlanState, list[tuple[PlanState, Callable]]] = {
+            PlanState.submitted: [
+                (PlanState.pending, self.do_revive_plan),
+            ],
             PlanState.pending: [
                 (PlanState.in_progress, self.do_execute_plan),
                 (PlanState.postponed, self.do_postpone_plan),
@@ -223,6 +271,7 @@ class Planner:
         :return: either the specified or all plans
         """
         folder_map = {
+            PlanState.submitted: self.submitted_folder,
             PlanState.pending: self.pending_folder,
             PlanState.in_progress: self.in_progress_folder,
             PlanState.failed: self.failed_folder,
@@ -234,31 +283,37 @@ class Planner:
 
         assert self.plan_folders is not None
         if ulid is not None:
-            for plan in self.plan_folders:
-                matching_plans = [p for p in plan.plans if p.ulid == ulid]
+            for plan_folder in self.plan_folders:
+                matching_plans = [p for p in plan_folder.plans if p.ulid == ulid]
                 if len(matching_plans) == 1:
                     return CanonicalResponse(value=matching_plans[0])
             return CanonicalResponse(errors=[f"no matching plan for {ulid=}"])
 
         if state is not None:
-            plan = folder_map.get(state)
-            if plan is None:
+            plan_folder = folder_map.get(state)
+            if plan_folder is None:
                 return CanonicalResponse(errors=[f"unknown PlanState '{state}'"])
-            return CanonicalResponse(value=plan.plans)
+            return CanonicalResponse(value=plan_folder.plans)
 
-        return CanonicalResponse(
-            value=PlansResponse(
-                maintaining_controller=self.controller.name,
-                expired=self.expired_folder.plans,
-                pending=self.pending_folder.plans,
-                failed=self.failed_folder.plans,
-                in_progress=self.in_progress_folder.plans,
-                completed=self.completed_folder.plans,
-                postponed=self.postponed_folder.plans,
-                deleted=self.deleted_folder.plans,
-                canceled=self.canceled_folder.plans,
+        try:
+            return CanonicalResponse(
+                value=PlansResponse(
+                    maintaining_controller=self.controller.name,
+                    submitted=self.submitted_folder.plans,
+                    expired=self.expired_folder.plans,
+                    pending=self.pending_folder.plans,
+                    failed=self.failed_folder.plans,
+                    in_progress=self.in_progress_folder.plans,
+                    completed=self.completed_folder.plans,
+                    postponed=self.postponed_folder.plans,
+                    deleted=self.deleted_folder.plans,
+                    canceled=self.canceled_folder.plans,
+                )
             )
-        )
+        except Exception as e:
+            return CanonicalResponse(
+                errors=[f"{function_name()}: error getting plans: {e}"]
+            )
 
     def locate_plan(self, ulid: str) -> tuple[PlanState, Plan] | None:
         with self.lock:
@@ -315,6 +370,44 @@ class Planner:
 
         # TBD: here we would trigger the actual execution of the plan, for now we just move the file and update the lists
 
+    def get_new_plan(self) -> CanonicalResponse:
+        try:
+            return CanonicalResponse(value=NewPlanTemplate(
+                ulid=str(ulid.ULID()),
+                filter_options=Config().get_thar_filters(),
+            ))
+        except Exception as e:
+            return CanonicalResponse(errors=[f"{function_name()}: {e}"])
+
+    def submit_plan(self, plan: Plan) -> CanonicalResponse:
+        try:
+            if plan.spec_assignment is None or plan.spec_assignment.instrument is None:
+                return CanonicalResponse(
+                    errors=["submit_plan: spec_assignment.instrument must be specified"]
+                )
+            if plan.ulid is None:
+                return CanonicalResponse(errors=["submit_plan: plan must have a ulid"])
+
+            file_path = self.submitted_folder.folder_path / f"PLAN_{plan.ulid}.toml"
+
+            plan_dict = plan.model_dump(
+                mode="json",
+                exclude={"full_path", "spec_api", "commited_unit_apis"},
+                exclude_none=True,
+            )
+            submitted_event = EventModel(what="submitted").model_dump(
+                mode="json", exclude_none=True
+            )
+            plan_dict["events"] = [submitted_event]
+
+            with open(file_path, "w") as f:
+                f.write(tomlkit.dumps(plan_dict))
+
+            self.submitted_folder.refresh()
+            return CanonicalResponse_Ok
+        except Exception as e:
+            return CanonicalResponse(errors=[f"{function_name()}: {e}"])
+
     def start_planning(self):
         """
         Starts the planning process
@@ -338,6 +431,15 @@ class Planner:
         plans_base = Const.BASE_CONTROL_PATH + "/plans"
         router.add_api_route(
             plans_base + "/get", tags=[tag], endpoint=self.get_plans, methods=["GET"]
+        )
+        router.add_api_route(
+            plans_base + "/new", tags=[tag], endpoint=self.get_new_plan, methods=["GET"]
+        )
+        router.add_api_route(
+            plans_base + "/submit",
+            tags=[tag],
+            endpoint=self.submit_plan,
+            methods=["POST"],
         )
         router.add_api_route(
             plans_base + "/postpone",
@@ -369,3 +471,8 @@ class Planner:
             endpoint=self.transition_to_canceled,
             methods=["POST"],
         )
+
+
+if __name__ == "__main__":
+    response = Planner(controller=None).get_plans(state=PlanState.pending)
+    print(response.model_dump_json(indent=2))
