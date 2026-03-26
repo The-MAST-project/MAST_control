@@ -35,6 +35,7 @@ make-certs:
 	@echo "Keys in /tmp (not committed). Certs in repo. Run 'make deploy-certs' (as root) to install."
 
 deploy-certs:
+	@[ "$(shell id -u)" = "0" ] || { echo "Error: deploy-certs must be run as root"; exit 1; }
 	cp $(CERT_DIR)/$(HOSTNAME).crt /etc/ssl/certs/$(HOSTNAME).crt
 	cp /tmp/$(HOSTNAME).key $(KEY_DIR)/$(HOSTNAME).key
 	chmod 600 $(KEY_DIR)/$(HOSTNAME).key
