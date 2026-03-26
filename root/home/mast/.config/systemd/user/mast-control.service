@@ -1,0 +1,15 @@
+[Unit]
+Description=MAST Control Server (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/mast/PycharmProjects/MAST_control
+ExecStart=/home/mast/PycharmProjects/MAST_control/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
