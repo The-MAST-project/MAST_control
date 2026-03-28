@@ -23,7 +23,6 @@ _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from common.paths import PathMaker
 from common.models.plans import Plan
 from common.models.plan_scraping import ScrapingResults, OwnersModel
 from common.utils import time_stamp
@@ -90,8 +89,12 @@ VALUE_PREDICATES = {f"-{f[0]}": f for f in SEARCHABLE_FIELDS}
 
 # ── path helpers ──────────────────────────────────────────────────────────────
 
+PLANS_ROOT  = Path("/Storage/mast-share/MAST/plans")
+FILES_FOLDER = PLANS_ROOT / "files"
+
+
 def files_folder() -> Path:
-    return Path(PathMaker.make_plans_files_folder())
+    return FILES_FOLDER
 
 
 def ensure_files_folder():
@@ -128,7 +131,7 @@ def load_scraping_results() -> ScrapingResults | None:
 
 def iter_plans(pools: list[PlanState] | None = None):
     """Yield (pool_state, toml_path) for all plans in the specified pools (default: all)."""
-    plans_root = Path(PathMaker.make_plans_folder())
+    plans_root = PLANS_ROOT
     for state in (pools or POOL_STATES):
         folder = plans_root / state.value
         if not folder.is_dir():
