@@ -66,9 +66,7 @@ class PlansFolder:
                     plan.full_path = path
                 except Exception as e:
                     logger.error(f"could not load plan from {path}, error: {e}")
-                    raise ValidationError(
-                        f"could not load plan from {path}, error: {e}"
-                    ) from e
+                    continue
                 self.plans.append(plan)
             logger.info(f"loaded {len(self.plans)} plans from '{self.folder_name}'")
 

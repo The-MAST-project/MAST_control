@@ -6,13 +6,17 @@ import sys
 import os
 from pathlib import Path
 
-_venv_python = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"
-if _venv_python.exists() and Path(sys.executable).resolve() != _venv_python.resolve():
+_venv_dir = Path(__file__).resolve().parent.parent / ".venv"
+_venv_python = _venv_dir / "bin" / "python"
+if _venv_python.exists() and Path(sys.prefix) != _venv_dir:
     os.execv(str(_venv_python), [str(_venv_python)] + sys.argv)
 
 # ── imports ───────────────────────────────────────────────────────────────────
 import json
+import re
 from typing import Any
+
+_UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -293,7 +297,9 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
 def do_scrape():
     ensure_files_folder()
     print("Scraping plans...", file=sys.stderr)
-    owners: dict[str, str | None] = {}
+    # uuid → name (None until resolved), name → None
+    owners_by_uuid: dict[str, str | None] = {}
+    owners_by_name: set[str] = set()
     classifications: set[str] = set()
     count = 0
 
@@ -304,13 +310,21 @@ def do_scrape():
             print(f"Warning: skipping {toml_path.name}: {e}", file=sys.stderr)
             continue
         if plan.owner:
-            owners.setdefault(plan.owner, None)
+            if _UUID_RE.match(plan.owner):
+                owners_by_uuid.setdefault(plan.owner, None)
+            else:
+                owners_by_name.add(plan.owner)
         if plan.target and plan.target.science and plan.target.science.classification:
             classifications.add(plan.target.science.classification)
         count += 1
 
+    owner_models = (
+        [OwnersModel(name=None,  uuid=uid)  for uid  in sorted(owners_by_uuid)] +
+        [OwnersModel(name=name,  uuid=None) for name in sorted(owners_by_name)]
+    )
+
     results = ScrapingResults(
-        owners=[OwnersModel(name=name, uuid=uuid) for name, uuid in owners.items()],
+        owners=owner_models,
         classifications=sorted(classifications),
         known_classifications=load_known_classifications(),
         scraped_at=time_stamp(),
@@ -338,9 +352,11 @@ def do_list_owners():
         print("No owners found.")
         return
     print(f"{'Name':<30} UUID")
-    print("-" * 60)
+    print("-" * 68)
     for owner in results.owners:
-        print(f"{owner.name or '(none)':<30} {owner.uuid or '(unknown)'}")
+        name_col = owner.name or "(unknown)"
+        uuid_col = owner.uuid or "(no uuid)"
+        print(f"{name_col:<30} {uuid_col}")
 
 
 def do_search(pools: list[PlanState] | None, expr: ExprNode):
