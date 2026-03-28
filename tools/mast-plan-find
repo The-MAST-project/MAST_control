@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""mast-plan-find — Search and scrape MAST observation plans"""
+
+# ── venv auto-loader ──────────────────────────────────────────────────────────
+import sys
+import os
+from pathlib import Path
+
+_venv_python = Path(__file__).resolve().parent.parent / ".venv" / "bin" / "python"
+if _venv_python.exists() and Path(sys.executable).resolve() != _venv_python.resolve():
+    os.execv(str(_venv_python), [str(_venv_python)] + sys.argv)
+
+# ── imports ───────────────────────────────────────────────────────────────────
+import json
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from common.paths import PathMaker
+from common.models.plans import Plan
+from common.models.plan_scraping import ScrapingResults, OwnersModel
+from common.utils import time_stamp
+from control.planning import PlanState
+
+# ── constants ─────────────────────────────────────────────────────────────────
+
+POOL_STATES = [s for s in PlanState if s != PlanState.in_progress]
+POOL_FLAGS   = {f"-{s.value}": s for s in POOL_STATES}
+
+DEFAULT_KNOWN_CLASSIFICATIONS = [
+    # White Dwarf science
+    "WD Pollution",
+    "WD Atmospheric Composition",
+    "WD Binary RV",
+    "WD Intermediate-Separation Binary",
+    "WD Exoplanet Transit",
+    # Transients & time-domain
+    "Supernova Classification",
+    "Supernova Follow-Up",
+    "Superluminous Supernova",
+    "Flash Spectroscopy",
+    "CSM Interaction",
+    "Early Supernova Spectroscopy",
+    "Tidal Disruption Event",
+    "Gravitational Wave Counterpart",
+    "Kilonova",
+    "Gamma-Ray Burst Counterpart",
+    "Cataclysmic Variable",
+    "ULTRASAT Follow-Up",
+    # Stellar
+    "Hot Subdwarf",
+    "Radial Velocity Survey",
+    "Stellar Classification",
+    "Variable Star",
+    # Extragalactic
+    "AGN",
+    "Galaxy Spectroscopy",
+    # Operational
+    "Engineering",
+    "Commissioning",
+]
+
+# (dot-path, label, match-type)
+SEARCHABLE_FIELDS = [
+    ("target.name",                   "Target name",    "text"),
+    ("target.magnitude",              "Magnitude",      "number"),
+    ("target.science.case",           "Science case",   "text"),
+    ("target.science.classification", "Classification", "text"),
+    ("spec_assignment.instrument",    "Instrument",     "exact"),
+    ("owner.name",                    "Owner",          "text"),
+]
+
+# flag → (field_path, description)
+BOOLEAN_PREDICATES = {
+    "-approved": ("approved", "Approved plans only"),
+    "-mockup":   ("mockup",   "Mockup plans only"),
+    "-valid":    ("_valid",   "Plans that pass validity check (target coords + instrument set)"),
+}
+
+VALUE_PREDICATES = {f"-{f[0]}": f for f in SEARCHABLE_FIELDS}
+
+
+# ── path helpers ──────────────────────────────────────────────────────────────
+
+def files_folder() -> Path:
+    return Path(PathMaker.make_plans_files_folder())
+
+
+def ensure_files_folder():
+    folder = files_folder()
+    folder.mkdir(parents=True, exist_ok=True)
+
+    kc_path = folder / "known_classifications.json"
+    if not kc_path.exists():
+        kc_path.write_text(json.dumps(DEFAULT_KNOWN_CLASSIFICATIONS, indent=2))
+        print(f"Initialized {kc_path}", file=sys.stderr)
+
+    gui_static = Path(__file__).resolve().parent.parent.parent / "MAST_gui" / "static" / "plan-files"
+    if not gui_static.exists() and not gui_static.is_symlink():
+        try:
+            gui_static.symlink_to(folder)
+            print(f"Created symlink {gui_static} → {folder}", file=sys.stderr)
+        except OSError as e:
+            print(f"Warning: could not create symlink {gui_static}: {e}", file=sys.stderr)
+
+
+def load_known_classifications() -> list[str]:
+    kc_path = files_folder() / "known_classifications.json"
+    if kc_path.exists():
+        return json.loads(kc_path.read_text())
+    return DEFAULT_KNOWN_CLASSIFICATIONS
+
+
+def load_scraping_results() -> ScrapingResults | None:
+    sr_path = files_folder() / "scraping_results.json"
+    if sr_path.exists():
+        return ScrapingResults.model_validate_json(sr_path.read_text())
+    return None
+
+
+def iter_plans(pools: list[PlanState] | None = None):
+    """Yield (pool_state, toml_path) for all plans in the specified pools (default: all)."""
+    plans_root = Path(PathMaker.make_plans_folder())
+    for state in (pools or POOL_STATES):
+        folder = plans_root / state.value
+        if not folder.is_dir():
+            continue
+        for toml_path in sorted(folder.glob("PLAN_*.toml")):
+            yield state, toml_path
+
+
+# ── field navigation ──────────────────────────────────────────────────────────
+
+def get_field_value(plan: Plan, path: str) -> Any:
+    """Navigate a dot-separated path on a Plan. owner.name → plan.owner."""
+    if path == "owner.name":
+        return plan.owner
+    parts = path.split(".")
+    obj: Any = plan
+    for part in parts:
+        if obj is None:
+            return None
+        if hasattr(obj, part):
+            obj = getattr(obj, part)
+        elif isinstance(obj, dict):
+            obj = obj.get(part)
+        else:
+            return None
+    return obj
+
+
+def match_value(field_val: Any, value: str, match_type: str) -> bool:
+    if field_val is None:
+        return False
+    if match_type == "exact":
+        return str(field_val).lower() == value.lower()
+    return value.lower() in str(field_val).lower()
+
+
+# ── validity check ────────────────────────────────────────────────────────────
+
+def is_plan_valid(plan: Plan) -> bool:
+    """A plan is valid when it has target coordinates and a spectrograph instrument set."""
+    if plan.target is None:
+        return False
+    if plan.target.ra_hours is None or plan.target.dec_degrees is None:
+        return False
+    if plan.spec_assignment is None or plan.spec_assignment.instrument is None:
+        return False
+    return True
+
+
+# ── predicate / expression tree ───────────────────────────────────────────────
+
+class Predicate:
+    def __init__(self, field_path: str, value: str | None = None,
+                 boolean: bool = False, match_type: str = "text",
+                 negated: bool = False):
+        self.field_path = field_path
+        self.value      = value
+        self.boolean    = boolean
+        self.match_type = match_type
+        self.negated    = negated
+
+    def match(self, plan: Plan) -> bool:
+        if self.boolean:
+            if self.field_path == "_valid":
+                result = is_plan_valid(plan)
+            else:
+                result = bool(get_field_value(plan, self.field_path))
+        else:
+            result = match_value(get_field_value(plan, self.field_path), self.value, self.match_type)
+        return not result if self.negated else result
+
+
+class ExprNode:
+    def __init__(self, op: str = "and"):
+        self.op: str = op          # "and" | "or" | "pred"
+        self.pred: Predicate | None = None
+        self.children: list[ExprNode] = []
+
+    @classmethod
+    def leaf(cls, pred: Predicate) -> "ExprNode":
+        n = cls(op="pred")
+        n.pred = pred
+        return n
+
+    def evaluate(self, plan: Plan) -> bool:
+        if self.op == "pred":
+            return self.pred.match(plan)
+        if self.op == "and":
+            return all(c.evaluate(plan) for c in self.children)
+        if self.op == "or":
+            return any(c.evaluate(plan) for c in self.children)
+        return True
+
+
+def build_expr_tree(nodes: list[tuple[str, ExprNode]]) -> ExprNode:
+    """Build left-associative expression tree from (pending_op, node) pairs."""
+    if not nodes:
+        return ExprNode(op="and")   # empty → match all
+    result = nodes[0][1]
+    for op, node in nodes[1:]:
+        if op == "or":
+            result = ExprNode(op="or")
+            result.children = [result, node]
+        else:
+            if result.op == "and":
+                result.children.append(node)
+            else:
+                new = ExprNode(op="and")
+                new.children = [result, node]
+                result = new
+    return result
+
+
+# ── argument parser ───────────────────────────────────────────────────────────
+
+def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]:
+    mode = {"scrape": False, "list_criteria": False, "list_owners": False, "help": False}
+    pools: list[PlanState] | None = None
+    nodes: list[tuple[str, ExprNode]] = []
+    pending_op = "and"
+    i = 0
+
+    while i < len(argv):
+        token = argv[i]
+
+        if token in ("-help", "--help", "-h"):
+            mode["help"] = True
+        elif token == "-scrape":
+            mode["scrape"] = True
+        elif token == "-list-criteria":
+            mode["list_criteria"] = True
+        elif token == "-list-owners":
+            mode["list_owners"] = True
+        elif token == "-and":
+            pending_op = "and"
+        elif token == "-or":
+            pending_op = "or"
+        elif token in POOL_FLAGS:
+            if pools is None:
+                pools = []
+            pools.append(POOL_FLAGS[token])
+        elif token in BOOLEAN_PREDICATES:
+            field_path, _ = BOOLEAN_PREDICATES[token]
+            nodes.append((pending_op, ExprNode.leaf(Predicate(field_path, boolean=True))))
+            pending_op = "and"
+        elif token.startswith("-not-") and f"-{token[5:]}" in BOOLEAN_PREDICATES:
+            field_path, _ = BOOLEAN_PREDICATES[f"-{token[5:]}"]
+            nodes.append((pending_op, ExprNode.leaf(Predicate(field_path, boolean=True, negated=True))))
+            pending_op = "and"
+        elif token in VALUE_PREDICATES:
+            if i + 1 >= len(argv):
+                print(f"Error: {token} requires a value", file=sys.stderr)
+                sys.exit(1)
+            i += 1
+            field_path, _, match_type = VALUE_PREDICATES[token]
+            nodes.append((pending_op, ExprNode.leaf(
+                Predicate(field_path, value=argv[i], match_type=match_type)
+            )))
+            pending_op = "and"
+        else:
+            print(f"Warning: unknown argument '{token}', ignoring", file=sys.stderr)
+
+        i += 1
+
+    return pools, build_expr_tree(nodes), mode
+
+
+# ── mode implementations ──────────────────────────────────────────────────────
+
+def do_scrape():
+    ensure_files_folder()
+    print("Scraping plans...", file=sys.stderr)
+    owners: dict[str, str | None] = {}
+    classifications: set[str] = set()
+    count = 0
+
+    for _state, toml_path in iter_plans():
+        try:
+            plan = Plan.from_toml_file(str(toml_path))
+        except Exception as e:
+            print(f"Warning: skipping {toml_path.name}: {e}", file=sys.stderr)
+            continue
+        if plan.owner:
+            owners.setdefault(plan.owner, None)
+        if plan.target and plan.target.science and plan.target.science.classification:
+            classifications.add(plan.target.science.classification)
+        count += 1
+
+    results = ScrapingResults(
+        owners=[OwnersModel(name=name, uuid=uuid) for name, uuid in owners.items()],
+        classifications=sorted(classifications),
+        known_classifications=load_known_classifications(),
+        scraped_at=time_stamp(),
+    )
+    sr_path = files_folder() / "scraping_results.json"
+    sr_path.write_text(results.model_dump_json(indent=2))
+    print(f"Scraped {count} plans → {sr_path}", file=sys.stderr)
+
+
+def do_list_criteria():
+    print("Value predicates:")
+    for path, label, match_type in SEARCHABLE_FIELDS:
+        print(f"  -{path:<38} {label} ({match_type})")
+    print("\nBoolean predicates (all support not- negation, e.g. -not-approved):")
+    for flag, (_, desc) in BOOLEAN_PREDICATES.items():
+        print(f"  {flag:<40} {desc}")
+
+
+def do_list_owners():
+    results = load_scraping_results()
+    if results is None:
+        print("No scraping results found. Run with -scrape first.", file=sys.stderr)
+        sys.exit(1)
+    if not results.owners:
+        print("No owners found.")
+        return
+    print(f"{'Name':<30} UUID")
+    print("-" * 60)
+    for owner in results.owners:
+        print(f"{owner.name or '(none)':<30} {owner.uuid or '(unknown)'}")
+
+
+def do_search(pools: list[PlanState] | None, expr: ExprNode):
+    found = 0
+    for state, toml_path in iter_plans(pools):
+        try:
+            plan = Plan.from_toml_file(str(toml_path))
+        except Exception as e:
+            print(f"Warning: skipping {toml_path.name}: {e}", file=sys.stderr)
+            continue
+        if expr.evaluate(plan):
+            target_name = (plan.target.name or "unnamed") if plan.target else "no target"
+            owner = plan.owner or "?"
+            print(f"{toml_path}  [{state.value}]  {target_name}  owner={owner}")
+            found += 1
+    if found == 0:
+        print("No plans matched.", file=sys.stderr)
+
+
+def do_help():
+    print("""
+Usage:
+  mast-plan-find [pool-flags] [predicates...] [-and|-or predicates...]
+  mast-plan-find -scrape
+  mast-plan-find -list-criteria
+  mast-plan-find -list-owners
+  mast-plan-find -help
+
+Pool flags (cumulative, default=all pools):
+  -submitted  -pending  -failed  -completed  -postponed  -canceled  -deleted
+
+Boolean predicates (all support not- negation):
+  -approved          Match only approved plans
+  -not-approved      Match only unapproved plans
+  -mockup            Match only mockup plans
+  -not-mockup        Match only non-mockup plans
+  -valid             Plans with target coords + instrument set
+  -not-valid         Plans missing target coords or instrument
+
+Value predicates (case-insensitive substring unless noted):
+  -target.name <value>
+  -target.magnitude <value>
+  -target.science.case <value>
+  -target.science.classification <value>
+  -spec_assignment.instrument <value>    (exact match)
+  -owner.name <value>
+
+Logical operators (default between predicates: -and):
+  -and  -or
+
+Examples:
+  mast-plan-find -target.science.classification "WD Pollution"
+  mast-plan-find -pending -submitted -owner.name arie
+  mast-plan-find -target.science.classification "Supernova" -or -target.science.classification "Flash"
+  mast-plan-find -mockup -pending
+""")
+
+
+# ── entry point ───────────────────────────────────────────────────────────────
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        do_help()
+        return
+
+    pools, expr, mode = parse_args(argv)
+
+    if mode["help"]:
+        do_help()
+    elif mode["list_criteria"]:
+        do_list_criteria()
+    elif mode["list_owners"]:
+        do_list_owners()
+    elif mode["scrape"]:
+        do_scrape()
+    else:
+        do_search(pools, expr)
+
+
+if __name__ == "__main__":
+    main()
