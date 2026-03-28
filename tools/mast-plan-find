@@ -14,7 +14,10 @@ if _venv_python.exists() and Path(sys.prefix) != _venv_dir:
 # ── imports ───────────────────────────────────────────────────────────────────
 import json
 import re
+from contextlib import suppress
 from typing import Any
+
+from pydantic import ValidationError
 
 _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
 
@@ -71,7 +74,8 @@ SEARCHABLE_FIELDS = [
     ("target.science.case",           "Science case",   "text"),
     ("target.science.classification", "Classification", "text"),
     ("spec_assignment.instrument",    "Instrument",     "exact"),
-    ("owner.name",                    "Owner",          "text"),
+    ("owner.name",                    "Owner display name", "text"),
+    ("owner.uuid",                    "Owner UUID",         "exact"),
 ]
 
 # flag → (field_path, description)
@@ -135,10 +139,24 @@ def iter_plans(pools: list[PlanState] | None = None):
 
 # ── field navigation ──────────────────────────────────────────────────────────
 
+_uuid_display_cache: dict[str, str] | None = None
+
+def _uuid_display() -> dict[str, str]:
+    global _uuid_display_cache
+    if _uuid_display_cache is None:
+        _uuid_display_cache = _fetch_uuid_display_map()
+    return _uuid_display_cache
+
+
 def get_field_value(plan: Plan, path: str) -> Any:
-    """Navigate a dot-separated path on a Plan. owner.name → plan.owner."""
+    """Navigate a dot-separated path on a Plan."""
+    if path == "owner.uuid":
+        return plan.owner if (plan.owner and _UUID_RE.match(plan.owner)) else None
     if path == "owner.name":
-        return plan.owner
+        owner = plan.owner
+        if owner and _UUID_RE.match(owner):
+            return _uuid_display().get(owner, owner)
+        return owner
     parts = path.split(".")
     obj: Any = plan
     for part in parts:
@@ -241,7 +259,7 @@ def build_expr_tree(nodes: list[tuple[str, ExprNode]]) -> ExprNode:
 # ── argument parser ───────────────────────────────────────────────────────────
 
 def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]:
-    mode = {"scrape": False, "list_criteria": False, "list_owners": False, "help": False}
+    mode = {"scrape": False, "list_criteria": False, "list_owners": False, "count": False, "help": False}
     pools: list[PlanState] | None = None
     nodes: list[tuple[str, ExprNode]] = []
     pending_op = "and"
@@ -258,6 +276,8 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
             mode["list_criteria"] = True
         elif token == "-list-owners":
             mode["list_owners"] = True
+        elif token == "-count":
+            mode["count"] = True
         elif token == "-and":
             pending_op = "and"
         elif token == "-or":
@@ -294,20 +314,33 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
 
 # ── mode implementations ──────────────────────────────────────────────────────
 
+def _fetch_uuid_display_map() -> dict[str, str]:
+    """Load {uuid: display} from users.json written by 'manage.py export_users'."""
+    users_path = files_folder() / "users.json"
+    if not users_path.exists():
+        print(f"Warning: {users_path} not found — run 'manage.py export_users' to resolve owner names", file=sys.stderr)
+        return {}
+    try:
+        data = json.loads(users_path.read_text())
+        return {entry["uuid"]: entry["display"] for entry in data}
+    except Exception as e:
+        print(f"Warning: could not read {users_path}: {e}", file=sys.stderr)
+        return {}
+
+
 def do_scrape():
     ensure_files_folder()
     print("Scraping plans...", file=sys.stderr)
-    # uuid → name (None until resolved), name → None
     owners_by_uuid: dict[str, str | None] = {}
     owners_by_name: set[str] = set()
     classifications: set[str] = set()
     count = 0
 
     for _state, toml_path in iter_plans():
-        try:
+        plan = None
+        with suppress(ValidationError):
             plan = Plan.from_toml_file(str(toml_path))
-        except Exception as e:
-            print(f"Warning: skipping {toml_path.name}: {e}", file=sys.stderr)
+        if plan is None:
             continue
         if plan.owner:
             if _UUID_RE.match(plan.owner):
@@ -318,9 +351,14 @@ def do_scrape():
             classifications.add(plan.target.science.classification)
         count += 1
 
+    uuid_display = _fetch_uuid_display_map()
+    for uid in owners_by_uuid:
+        if uid in uuid_display:
+            owners_by_uuid[uid] = uuid_display[uid]
+
     owner_models = (
-        [OwnersModel(name=None,  uuid=uid)  for uid  in sorted(owners_by_uuid)] +
-        [OwnersModel(name=name,  uuid=None) for name in sorted(owners_by_name)]
+        [OwnersModel(name=owners_by_uuid[uid], uuid=uid) for uid in sorted(owners_by_uuid)] +
+        [OwnersModel(name=name, uuid=None) for name in sorted(owners_by_name)]
     )
 
     results = ScrapingResults(
@@ -359,20 +397,23 @@ def do_list_owners():
         print(f"{name_col:<30} {uuid_col}")
 
 
-def do_search(pools: list[PlanState] | None, expr: ExprNode):
+def do_search(pools: list[PlanState] | None, expr: ExprNode, count_only: bool = False):
     found = 0
     for state, toml_path in iter_plans(pools):
-        try:
+        plan = None
+        with suppress(Exception):
             plan = Plan.from_toml_file(str(toml_path))
-        except Exception as e:
-            print(f"Warning: skipping {toml_path.name}: {e}", file=sys.stderr)
+        if plan is None:
             continue
         if expr.evaluate(plan):
-            target_name = (plan.target.name or "unnamed") if plan.target else "no target"
-            owner = plan.owner or "?"
-            print(f"{toml_path}  [{state.value}]  {target_name}  owner={owner}")
+            if not count_only:
+                target_name = (plan.target.name or "unnamed") if plan.target else "no target"
+                owner = get_field_value(plan, "owner.name") or "?"
+                print(f"{toml_path}  [{state.value}]  {target_name}  owner={owner}")
             found += 1
-    if found == 0:
+    if count_only:
+        print(found)
+    elif found == 0:
         print("No plans matched.", file=sys.stderr)
 
 
@@ -402,7 +443,8 @@ Value predicates (case-insensitive substring unless noted):
   -target.science.case <value>
   -target.science.classification <value>
   -spec_assignment.instrument <value>    (exact match)
-  -owner.name <value>
+  -owner.name <value>                    (display name, substring)
+  -owner.uuid <value>                    (exact match)
 
 Logical operators (default between predicates: -and):
   -and  -or
@@ -412,6 +454,8 @@ Examples:
   mast-plan-find -pending -submitted -owner.name arie
   mast-plan-find -target.science.classification "Supernova" -or -target.science.classification "Flash"
   mast-plan-find -mockup -pending
+  mast-plan-find -count -mockup
+  mast-plan-find -count -pending -owner.name arie
 """)
 
 
@@ -434,7 +478,7 @@ def main():
     elif mode["scrape"]:
         do_scrape()
     else:
-        do_search(pools, expr)
+        do_search(pools, expr, count_only=mode["count"])
 
 
 if __name__ == "__main__":
