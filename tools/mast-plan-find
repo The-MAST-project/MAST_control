@@ -262,7 +262,7 @@ def build_expr_tree(nodes: list[tuple[str, ExprNode]]) -> ExprNode:
 # ── argument parser ───────────────────────────────────────────────────────────
 
 def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]:
-    mode = {"scrape": False, "list_criteria": False, "list_owners": False, "count": False, "help": False}
+    mode = {"scrape": False, "list_criteria": False, "list_owners": False, "list_classifications": False, "count": False, "help": False}
     pools: list[PlanState] | None = None
     nodes: list[tuple[str, ExprNode]] = []
     pending_op = "and"
@@ -279,6 +279,8 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
             mode["list_criteria"] = True
         elif token == "-list-owners":
             mode["list_owners"] = True
+        elif token == "-list-science-classifications":
+            mode["list_classifications"] = True
         elif token == "-count":
             mode["count"] = True
         elif token == "-and":
@@ -400,6 +402,15 @@ def do_list_owners():
         print(f"{name_col:<30} {uuid_col}")
 
 
+def do_list_science_classifications():
+    results = load_scraping_results()
+    if results is None:
+        print("No scraping results found. Run with -scrape first.", file=sys.stderr)
+        sys.exit(1)
+    for c in results.classifications:
+        print(c)
+
+
 def do_search(pools: list[PlanState] | None, expr: ExprNode, count_only: bool = False):
     found = 0
     for state, toml_path in iter_plans(pools):
@@ -427,6 +438,7 @@ Usage:
   mast-plan-find -scrape
   mast-plan-find -list-criteria
   mast-plan-find -list-owners
+  mast-plan-find -list-science-classifications
   mast-plan-find -help
 
 Pool flags (cumulative, default=all pools):
@@ -478,6 +490,8 @@ def main():
         do_list_criteria()
     elif mode["list_owners"]:
         do_list_owners()
+    elif mode["list_classifications"]:
+        do_list_science_classifications()
     elif mode["scrape"]:
         do_scrape()
     else:
