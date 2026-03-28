@@ -1,0 +1,26 @@
+ulid = "01KMTBEQ0V30M0J96KHRYQ3E6W"
+owner = "mockup.scientist"
+mockup = true
+merit = 3
+requested_units = ["mast00"]
+approved = true
+
+[target]
+ra_hours = 22.917
+dec_degrees = 80.65
+name = "HS 2253+8023"
+magnitude = 15.0
+requested_exposure_duration = 1800.0
+requested_number_of_exposures = 3
+
+[target.science]
+classification = "WD Atmospheric Composition"
+case = "Atmospheric parameter determination (Teff, log g) via Balmer line profile fitting. DeepSpec broad-band coverage provides clean continuum for reliable normalization."
+
+[spec_assignment]
+instrument = "deepspec"
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"

@@ -1,0 +1,26 @@
+ulid = "01KMTBEQ0N5H8YN3NCSJD2G2KX"
+owner = "mockup.scientist"
+mockup = true
+merit = 10
+requested_units = ["mast00"]
+approved = true
+
+[target]
+ra_hours = 8.15
+dec_degrees = -66.3
+name = "WD 0806-661"
+magnitude = 13.8
+requested_exposure_duration = 1200.0
+requested_number_of_exposures = 3
+
+[target.science]
+classification = "WD Exoplanet Transit"
+case = "Photometric and spectroscopic monitoring for transiting debris and planetesimals. Target shows irregular transit-like dimming events consistent with disintegrating rocky bodies in a close-in orbit."
+
+[spec_assignment]
+instrument = "deepspec"
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"

@@ -1,0 +1,14 @@
+ulid = "01KMTBEQ0MCR232Q6WQGBNKJ27"
+owner = "mockup.scientist"
+mockup = true
+merit = 8
+requested_units = ["mast00"]
+approved = true
+
+[spec_assignment]
+instrument = "highspec"
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"

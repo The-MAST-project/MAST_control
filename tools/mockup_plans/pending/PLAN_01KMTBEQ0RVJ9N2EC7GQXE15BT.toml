@@ -1,0 +1,25 @@
+ulid = "01KMTBEQ0RVJ9N2EC7GQXE15BT"
+owner = "mockup.scientist"
+mockup = true
+merit = 6
+requested_units = ["mast00"]
+approved = true
+
+[target]
+ra_hours = 19.625
+dec_degrees = 44.171
+name = "KIC 8626021"
+magnitude = 17.5
+requested_exposure_duration = 3600.0
+requested_number_of_exposures = 3
+
+[target.science]
+classification = "Variable Star"
+case = "Time-series spectroscopy of pulsating WD to characterize g-mode oscillation spectrum. Repeated short exposures to build phase-resolved spectral time series."
+
+[spec_assignment]
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"

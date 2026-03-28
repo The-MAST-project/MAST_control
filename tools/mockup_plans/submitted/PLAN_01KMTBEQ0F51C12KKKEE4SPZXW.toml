@@ -1,0 +1,20 @@
+ulid = "01KMTBEQ0F51C12KKKEE4SPZXW"
+owner = "mockup.scientist"
+mockup = true
+merit = 5
+requested_units = ["mast00"]
+
+[target]
+ra_hours = 0.819
+dec_degrees = 5.389
+name = "Van Maanen's Star"
+magnitude = 12.4
+requested_exposure_duration = 600.0
+requested_number_of_exposures = 3
+
+[target.science]
+classification = "WD Atmospheric Composition"
+case = "Atmospheric parameter determination (Teff, log g) via Balmer line profile fitting. DeepSpec broad-band coverage provides clean continuum for reliable normalization."
+
+[spec_assignment]
+instrument = "deepspec"

@@ -1,0 +1,20 @@
+ulid = "01KMTBEQ0JWDN45H5AMPX1VCPG"
+owner = "mockup.scientist"
+mockup = true
+merit = 3
+requested_units = ["mast00"]
+
+[target]
+ra_hours = 16.526
+dec_degrees = 78.1
+name = "WD 1631+781"
+magnitude = 15.1
+requested_exposure_duration = 2700.0
+requested_number_of_exposures = 3
+
+[target.science]
+classification = "WD Binary RV"
+case = "Radial velocity monitoring campaign to determine orbital parameters. HighSpec R~20,000 at Ca II H&K lines provides ~15 km/s precision, sufficient to characterize compact binary orbits."
+
+[spec_assignment]
+instrument = "highspec"

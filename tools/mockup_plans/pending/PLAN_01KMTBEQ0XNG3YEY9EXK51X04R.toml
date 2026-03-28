@@ -1,0 +1,26 @@
+ulid = "01KMTBEQ0XNG3YEY9EXK51X04R"
+owner = "mockup.scientist"
+mockup = true
+merit = 7
+requested_units = ["mast00"]
+approved = true
+
+[target]
+ra_hours = 13.015
+dec_degrees = 27.2
+name = "WD 1257+272"
+magnitude = 15.5
+requested_exposure_duration = 1800.0
+requested_number_of_exposures = 3
+
+[target.science]
+classification = "WD Pollution"
+case = "Spectroscopic monitoring to characterize accreted planetary material. DeepSpec's 380-850nm bandpass enables simultaneous detection of Ca, Mg, Fe and Si absorption features from tidally disrupted planetesimals."
+
+[spec_assignment]
+instrument = "deepspec"
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"

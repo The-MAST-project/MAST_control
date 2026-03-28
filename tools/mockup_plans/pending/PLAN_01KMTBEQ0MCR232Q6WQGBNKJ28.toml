@@ -1,0 +1,30 @@
+ulid = "01KMTBEQ0MCR232Q6WQGBNKJ28"
+owner = "mockup.scientist"
+mockup = true
+merit = 9
+requested_units = ["mast00"]
+approved = true
+
+[target]
+ra_hours = 11.813
+dec_degrees = 1.467
+name = "WD 1145+017"
+magnitude = 17.3
+requested_exposure_duration = 2400.0
+requested_number_of_exposures = 5
+
+[target.science]
+classification = "WD Exoplanet Transit"
+case = "Photometric and spectroscopic monitoring for transiting debris and planetesimals. Target shows irregular transit-like dimming events consistent with disintegrating rocky bodies in a close-in orbit."
+
+[spec_assignment]
+instrument = "deepspec"
+
+[spec_assignment.calibration]
+lamp_on = true
+filter = "ND3000"
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"

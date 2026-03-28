@@ -1,0 +1,26 @@
+ulid = "01KMTBEQ0QRG0069RGJRKPPXVP"
+owner = "mockup.scientist"
+mockup = true
+merit = 4
+requested_units = ["mast00"]
+approved = true
+
+[target]
+ra_hours = 3.841
+dec_degrees = 41.512
+name = "SN 2024ape"
+magnitude = 16.8
+requested_exposure_duration = 2700.0
+requested_number_of_exposures = 3
+
+[target.science]
+classification = "Flash Spectroscopy"
+case = "Rapid spectroscopic follow-up triggered by LAST/ULTRASAT alert within hours of explosion. HighSpec classification of circumstellar material via flash ionization lines before the early CSM signatures fade."
+
+[spec_assignment]
+instrument = "highspec"
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"

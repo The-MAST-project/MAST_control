@@ -1,0 +1,30 @@
+ulid = "01KMTBEQ0RVJ9N2EC7GQXE15BV"
+owner = "mockup.scientist"
+mockup = true
+merit = 7
+requested_units = ["mast00"]
+approved = true
+
+[target]
+ra_hours = 15.141
+dec_degrees = 23.728
+name = "GW Lib"
+magnitude = 18.0
+requested_exposure_duration = 3600.0
+requested_number_of_exposures = 3
+
+[target.science]
+classification = "Cataclysmic Variable"
+case = "Spectroscopic monitoring of accreting WD system. HighSpec resolves the double-peaked Hα emission from the accretion disk and tracks radial velocity variations through the orbital cycle."
+
+[spec_assignment]
+instrument = "highspec"
+
+[spec_assignment.calibration]
+lamp_on = true
+filter = "ND3000"
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"

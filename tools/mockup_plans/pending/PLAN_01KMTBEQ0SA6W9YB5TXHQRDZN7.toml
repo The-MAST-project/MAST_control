@@ -1,0 +1,26 @@
+ulid = "01KMTBEQ0SA6W9YB5TXHQRDZN7"
+owner = "mockup.scientist"
+mockup = true
+merit = 8
+requested_units = ["mast00"]
+approved = true
+
+[target]
+ra_hours = 10.975
+dec_degrees = 32.417
+name = "ULTRASAT-J1058+32"
+magnitude = 18.5
+requested_exposure_duration = 2400.0
+requested_number_of_exposures = 5
+
+[target.science]
+classification = "ULTRASAT Follow-Up"
+case = "Ground-based spectroscopic follow-up of ULTRASAT UV transient alert. DeepSpec classification to determine transient type and redshift."
+
+[spec_assignment]
+instrument = "deepspec"
+
+[[events]]
+what = "approved"
+detail = "mockup"
+when = "2026-03-28T13:52:05Z"
