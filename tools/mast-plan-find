@@ -14,6 +14,7 @@ if _venv_python.exists() and Path(sys.prefix) != _venv_dir:
 # ── imports ───────────────────────────────────────────────────────────────────
 import json
 import re
+import subprocess
 from contextlib import suppress
 from typing import Any
 
@@ -262,7 +263,7 @@ def build_expr_tree(nodes: list[tuple[str, ExprNode]]) -> ExprNode:
 # ── argument parser ───────────────────────────────────────────────────────────
 
 def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]:
-    mode = {"scrape": False, "list_criteria": False, "list_owners": False, "list_classifications": False, "count": False, "help": False}
+    mode = {"scrape": False, "list_criteria": False, "list_owners": False, "list_classifications": False, "count": False, "help": False, "exec": None}
     pools: list[PlanState] | None = None
     nodes: list[tuple[str, ExprNode]] = []
     pending_op = "and"
@@ -287,6 +288,16 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
             pending_op = "and"
         elif token == "-or":
             pending_op = "or"
+        elif token == "-exec":
+            cmd: list[str] = []
+            i += 1
+            while i < len(argv) and argv[i] != ";":
+                cmd.append(argv[i])
+                i += 1
+            if not cmd:
+                print("Error: -exec requires a command terminated by ;", file=sys.stderr)
+                sys.exit(1)
+            mode["exec"] = cmd
         elif token in POOL_FLAGS:
             if pools is None:
                 pools = []
@@ -411,7 +422,8 @@ def do_list_science_classifications():
         print(c)
 
 
-def do_search(pools: list[PlanState] | None, expr: ExprNode, count_only: bool = False):
+def do_search(pools: list[PlanState] | None, expr: ExprNode, count_only: bool = False,
+              exec_cmd: list[str] | None = None):
     found = 0
     for state, toml_path in iter_plans(pools):
         plan = None
@@ -420,14 +432,17 @@ def do_search(pools: list[PlanState] | None, expr: ExprNode, count_only: bool = 
         if plan is None:
             continue
         if expr.evaluate(plan):
-            if not count_only:
+            if exec_cmd:
+                cmd = [arg.replace("{}", str(toml_path)) for arg in exec_cmd]
+                subprocess.run(cmd)
+            elif not count_only:
                 target_name = (plan.target.name or "unnamed") if plan.target else "no target"
                 owner = get_field_value(plan, "owner.name") or "?"
                 print(f"{toml_path}  [{state.value}]  {target_name}  owner={owner}")
             found += 1
     if count_only:
         print(found)
-    elif found == 0:
+    elif not exec_cmd and found == 0:
         print("No plans matched.", file=sys.stderr)
 
 
@@ -464,6 +479,11 @@ Value predicates (case-insensitive substring unless noted):
 Logical operators (default between predicates: -and):
   -and  -or
 
+Actions:
+  -exec <cmd> [args...] ;
+      Execute command for each matched plan, substituting {} with the plan file path.
+      Terminated by ; (quote it to prevent shell interpretation: ';').
+
 Examples:
   mast-plan-find -target.science.classification "WD Pollution"
   mast-plan-find -pending -submitted -owner.name arie
@@ -471,6 +491,8 @@ Examples:
   mast-plan-find -mockup -pending
   mast-plan-find -count -mockup
   mast-plan-find -count -pending -owner.name arie
+  mast-plan-find -pending -valid -exec cp {} /tmp/ready/ ';'
+  mast-plan-find -owner.name arie -exec cat {} ';'
 """)
 
 
@@ -495,7 +517,7 @@ def main():
     elif mode["scrape"]:
         do_scrape()
     else:
-        do_search(pools, expr, count_only=mode["count"])
+        do_search(pools, expr, count_only=mode["count"], exec_cmd=mode["exec"])
 
 
 if __name__ == "__main__":
