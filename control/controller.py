@@ -23,6 +23,7 @@ from common.dlipowerswitch import (
     DliPowerSwitch,
 )
 from common.mast_logging import init_log
+from common.models.batches import Batch
 from common.models.statuses import (
     BasicStatus,
     ControllerStatus,
@@ -544,10 +545,27 @@ class Controller(Activities):
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-        self.in_progress: Plan | None = (
-            None  #  may be BatchOfPlans in the future, but start with just one plan
-        )
+        self.in_progress: Plan | Batch | None = None
         self._initialized = True
+
+    def operational_units(self, site_name: str | None) -> list[str]:
+        """Uses cached statuses to get a list of currently operational units for the given site_name (or preferred_site if None)"""
+        if site_name is None:
+            site_name = self.preferred_site
+        if site_name is None:
+            logger.error(f"{function_name()}: site_name is None and preferred_site is not set")
+            return []
+
+        site_cache = self.status_cache.get(site_name)
+        if site_cache is None:
+            logger.error(f"{function_name()}: site '{site_name}' not found in status cache")
+            return []
+
+        return [
+            unit_name
+            for unit_name, cached_value in site_cache["units"].items()
+            if cached_value.value and cached_value.value.operational
+        ]
 
     def _cleanup_on_exit(self):
         """Called automatically when Python exits (including Ctrl+C)"""
@@ -864,19 +882,23 @@ class Controller(Activities):
         new_state = power_switch.get_outlet_state(outlet_name=outlet_name)
         return CanonicalResponse(value=new_state)
 
-    # async def execute_assigned_plan(self, ulid: str) -> CanonicalResponse:
-    #     matching_plans = [
-    #         p for p in self.expired_plans_folder.plans if p.plan.ulid == ulid
-    #     ]
-    #     if len(matching_plans) == 0:
-    #         return CanonicalResponse(errors=[f"no matching plan for {ulid=}"])
-    #     plan = matching_plans[0]
-    #     plan.run_folder = PathMaker.make_run_folder()
-    #     os.makedirs(plan.run_folder, exist_ok=True)
-    #     os.link(plan.file, os.path.join(plan.run_folder, "task"))
-    #     self.in_progress = plan
-    #     asyncio.create_task(plan.execute(controller=self))
-    #     return CanonicalResponse_Ok
+    async def execute(self, work: Plan | Batch) -> CanonicalResponse:
+        """
+        Executes a plan or batch. This is called by the Planner when a plan or batch is ready to be executed.
+        """
+        if self.in_progress is not None:
+            return CanonicalResponse(
+                errors=[
+                    f"another plan/batch is already in progress: '{self.in_progress.ulid}'"
+                ]
+            )
+
+        self.in_progress = work
+        try:
+            await work.execute(controller=self)
+        finally:
+            self.in_progress = None
+        return CanonicalResponse_Ok
 
     async def task_acquisition_path_notification(
         self, notification: TaskAcquisitionPathNotification

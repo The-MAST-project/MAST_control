@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import shutil
 from enum import StrEnum
@@ -7,14 +8,14 @@ from typing import Callable
 
 import tomlkit
 import ulid
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
 from common.mast_logging import init_log
-from common.models.events import EventModel
 from common.models.constraints import ConstraintsModel, RepeatsModel
+from common.models.events import EventModel
 from common.models.plans import Plan
 from common.models.spectrographs import SpectrographModel
 from common.paths import PathMaker
@@ -116,15 +117,19 @@ class NewPlanTemplate(BaseModel):
     production: bool = True
     quorum: int = 1
     requested_units: list[str] = []
-    target: dict = Field(default_factory=lambda: {
-        "ra_hours": None,
-        "dec_degrees": None,
-        "requested_exposure_duration": None,
-        "requested_number_of_exposures": 1,
-        "max_exposure_duration": None,
-        "repeats": RepeatsModel().model_dump(),
-    })
-    spec_assignment: dict = Field(default_factory=lambda: SpectrographModel().model_dump())
+    target: dict = Field(
+        default_factory=lambda: {
+            "ra_hours": None,
+            "dec_degrees": None,
+            "requested_exposure_duration": None,
+            "requested_number_of_exposures": 1,
+            "max_exposure_duration": None,
+            "repeats": RepeatsModel().model_dump(),
+        }
+    )
+    spec_assignment: dict = Field(
+        default_factory=lambda: SpectrographModel().model_dump()
+    )
     constraints: dict = Field(default_factory=lambda: ConstraintsModel().model_dump())
     filter_options: list[str] = []
 
@@ -211,7 +216,7 @@ class Planner:
     def transition_to_deleted(self, ulid: str) -> CanonicalResponse:
         return self.transition_plan(ulid, PlanState.deleted)
 
-    def transition_to_in_progress(self, ulid: str) -> CanonicalResponse:
+    async def transition_to_in_progress(self, ulid: str) -> CanonicalResponse:
         return self.transition_plan(ulid, PlanState.in_progress)
 
     def transition_to_canceled(self, ulid: str) -> CanonicalResponse:
@@ -357,7 +362,7 @@ class Planner:
         )
         shutil.move(str(plan.full_path), str(new_path))
 
-    def do_execute_plan(self, plan: Plan):
+    def do_execute_plan(self, plan: Plan) -> CanonicalResponse:
         assert plan is not None and plan.full_path is not None
         new_path = self.in_progress_folder.folder_path / plan.full_path.name
 
@@ -366,14 +371,17 @@ class Planner:
         )
         shutil.move(str(plan.full_path), str(new_path))
 
-        # TBD: here we would trigger the actual execution of the plan, for now we just move the file and update the lists
+        asyncio.create_task(self.controller.execute(plan))
+        return CanonicalResponse_Ok
 
     def get_new_plan(self) -> CanonicalResponse:
         try:
-            return CanonicalResponse(value=NewPlanTemplate(
-                ulid=str(ulid.ULID()),
-                filter_options=Config().get_thar_filters(),
-            ))
+            return CanonicalResponse(
+                value=NewPlanTemplate(
+                    ulid=str(ulid.ULID()),
+                    filter_options=Config().get_thar_filters(),
+                )
+            )
         except Exception as e:
             return CanonicalResponse(errors=[f"{function_name()}: {e}"])
 
