@@ -32,7 +32,7 @@ from common.models.statuses import (
     SpecStatus,
 )
 from common.notifications import UiUpdateNotifications
-from common.tasks.models import TaskAcquisitionPathNotification
+from common.tasks.models import AcquisitionPathNotification
 from common.utils import (
     RepeatTimer,
     function_name,
@@ -553,12 +553,16 @@ class Controller(Activities):
         if site_name is None:
             site_name = self.preferred_site
         if site_name is None:
-            logger.error(f"{function_name()}: site_name is None and preferred_site is not set")
+            logger.error(
+                f"{function_name()}: site_name is None and preferred_site is not set"
+            )
             return []
 
         site_cache = self.status_cache.get(site_name)
         if site_cache is None:
-            logger.error(f"{function_name()}: site '{site_name}' not found in status cache")
+            logger.error(
+                f"{function_name()}: site '{site_name}' not found in status cache"
+            )
             return []
 
         return [
@@ -901,7 +905,7 @@ class Controller(Activities):
         return CanonicalResponse_Ok
 
     async def task_acquisition_path_notification(
-        self, notification: TaskAcquisitionPathNotification
+        self, notification: AcquisitionPathNotification
     ):
         """
         Receives locations of products related to a running task:
@@ -914,9 +918,9 @@ class Controller(Activities):
         if self.in_progress is None:
             logger.error(f"{function_name}: no in_progress")
 
-        if self.in_progress and notification.task_id != self.in_progress.ulid:
+        if self.in_progress and notification.assignment_id != self.in_progress.ulid:
             logger.error(
-                f"ignored notification for plan/batch '{notification.task_id}' ('{self.in_progress.ulid=}')"
+                f"ignored notification for plan/batch '{notification.assignment_id}' ('{self.in_progress.ulid=}')"
             )
             return
 
