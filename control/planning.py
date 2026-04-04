@@ -16,6 +16,7 @@ from common.const import Const
 from common.mast_logging import init_log
 from common.models.constraints import ConstraintsModel, RepeatsModel
 from common.models.events import EventModel
+from common.models.plan_scraping import ScrapingResults
 from common.models.plans import Plan
 from common.models.spectrographs import SpectrographModel
 from common.paths import PathMaker
@@ -23,6 +24,24 @@ from common.utils import function_name
 
 logger = logging.getLogger("planning")
 init_log(logger)
+
+
+def _import_plan_find():
+    """Import mast-plan-find tool (hyphenated name requires importlib)."""
+    import importlib.util
+    tool_path = Path(__file__).resolve().parent.parent / "tools" / "mast-plan-find"
+    spec = importlib.util.spec_from_file_location("mast_plan_find", tool_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _do_scrape():
+    _import_plan_find().do_scrape()
+
+
+def _load_scraping_results():
+    return _import_plan_find().load_scraping_results()
 
 PLAN_PATH_PATTERN: str = f"*/{Const.PlanFileNamePattern}"
 
@@ -104,6 +123,7 @@ class PlansResponse(BaseModel):
     postponed: list[Plan] = []
     deleted: list[Plan] = []
     canceled: list[Plan] = []
+    scraping_results: ScrapingResults | None = None
 
 
 class NewPlanTemplate(BaseModel):
@@ -172,6 +192,11 @@ class Planner:
         ]
         # ensure non-None typing for downstream code
         self.plan_in_progress = None
+
+        try:
+            _do_scrape()
+        except Exception as e:
+            logger.warning(f"Planner init: scrape failed: {e}")
 
         self.transitions: dict[PlanState, list[tuple[PlanState, Callable]]] = {
             PlanState.submitted: [
@@ -299,6 +324,11 @@ class Planner:
             return CanonicalResponse(value=plan_folder.plans)
 
         try:
+            scraping_results = _load_scraping_results()
+        except Exception:
+            scraping_results = None
+
+        try:
             return CanonicalResponse(
                 value=PlansResponse(
                     maintaining_controller=self.controller.name,
@@ -311,6 +341,7 @@ class Planner:
                     postponed=self.postponed_folder.plans,
                     deleted=self.deleted_folder.plans,
                     canceled=self.canceled_folder.plans,
+                    scraping_results=scraping_results,
                 )
             )
         except Exception as e:
@@ -410,6 +441,10 @@ class Planner:
                 f.write(tomlkit.dumps(plan_dict))
 
             self.submitted_folder.refresh()
+            try:
+                _do_scrape()
+            except Exception as e:
+                logger.warning(f"submit_plan: scrape failed: {e}")
             return CanonicalResponse_Ok
         except Exception as e:
             return CanonicalResponse(errors=[f"{function_name()}: {e}"])
