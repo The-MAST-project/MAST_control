@@ -344,7 +344,34 @@ def _fetch_uuid_display_map() -> dict[str, str]:
         return {}
 
 
-def do_scrape():
+def _needs_rescrape() -> bool:
+    """Return True if any plan file or auxiliary file is newer than scraped_at."""
+    sr = load_scraping_results()
+    if sr is None:
+        return True
+    from datetime import datetime, timezone
+    try:
+        scraped_at = datetime.fromisoformat(sr.scraped_at.replace('Z', '+00:00'))
+    except Exception:
+        return True
+    folder = files_folder()
+    for aux in ('users.json', 'known_classifications.json'):
+        p = folder / aux
+        if p.exists():
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+            if mtime > scraped_at:
+                return True
+    for _state, toml_path in iter_plans():
+        mtime = datetime.fromtimestamp(toml_path.stat().st_mtime, tz=timezone.utc)
+        if mtime > scraped_at:
+            return True
+    return False
+
+
+def do_scrape(force: bool = False):
+    if not force and not _needs_rescrape():
+        print("Scraping skipped — no plans or aux files newer than scraped_at.", file=sys.stderr)
+        return
     ensure_files_folder()
     print("Scraping plans...", file=sys.stderr)
     owners_by_uuid: dict[str, str | None] = {}

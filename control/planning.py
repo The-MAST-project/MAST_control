@@ -232,56 +232,48 @@ class Planner:
 
         self.lock = Lock()
 
-    def transition_to_postponed(self, ulid: str) -> CanonicalResponse:
-        return self.transition_plan(ulid, PlanState.postponed)
+    def transition_to_postponed(self, plan_ids: list[str]) -> CanonicalResponse:
+        return self.transition_plans(plan_ids, PlanState.postponed)
 
-    def transition_to_pending(self, ulid: str) -> CanonicalResponse:
-        return self.transition_plan(ulid, PlanState.pending)
+    def transition_to_pending(self, plan_ids: list[str]) -> CanonicalResponse:
+        return self.transition_plans(plan_ids, PlanState.pending)
 
-    def transition_to_deleted(self, ulid: str) -> CanonicalResponse:
-        return self.transition_plan(ulid, PlanState.deleted)
+    def transition_to_deleted(self, plan_ids: list[str]) -> CanonicalResponse:
+        return self.transition_plans(plan_ids, PlanState.deleted)
 
-    async def transition_to_in_progress(self, ulid: str) -> CanonicalResponse:
-        return self.transition_plan(ulid, PlanState.in_progress)
+    async def transition_to_in_progress(self, plan_ids: list[str]) -> CanonicalResponse:
+        return self.transition_plans(plan_ids, PlanState.in_progress)
 
-    def transition_to_canceled(self, ulid: str) -> CanonicalResponse:
-        return self.transition_plan(ulid, PlanState.canceled)
+    def transition_to_canceled(self, plan_ids: list[str]) -> CanonicalResponse:
+        return self.transition_plans(plan_ids, PlanState.canceled)
 
-    def transition_to_completed(self, ulid: str) -> CanonicalResponse:
-        return self.transition_plan(ulid, PlanState.completed)
+    def transition_to_completed(self, plan_ids: list[str]) -> CanonicalResponse:
+        return self.transition_plans(plan_ids, PlanState.completed)
 
-    def transition_plan(self, ulid: str, target_state: PlanState) -> CanonicalResponse:
-        result = self.locate_plan(ulid)
-        if result is None:
-            return CanonicalResponse(errors=[f"no matching plan for {ulid=}"])
+    def transition_plans(self, plan_ids: list[str], target_state: PlanState) -> CanonicalResponse:
+        errors = []
+        for plan_id in plan_ids:
+            result = self.locate_plan(plan_id)
+            if result is None:
+                continue
 
-        current_state, plan = result
-        transitions = self.transitions.get(current_state, [])
-        for state, action in transitions:
-            if state == target_state:
-                try:
-                    action(plan)
-                except Exception as e:
-                    logger.error(
-                        f"error transitioning plan {ulid} to state {target_state}: {e}"
-                    )
-                    return CanonicalResponse(
-                        errors=[
-                            f"error transitioning plan {ulid} to state {target_state}"
-                        ]
-                    )
-                finally:
-                    self.refresh()
-        else:
-            logger.warning(
-                f"invalid transition from {current_state} to {target_state} for plan {ulid}"
-            )
+            current_state, plan = result
+            transitions = self.transitions.get(current_state, [])
+            for state, action in transitions:
+                if state == target_state:
+                    try:
+                        action(plan)
+                    except Exception as e:
+                        error = f"error transitioning plan {plan_id} to state {target_state}: {e}"
+                        errors.append(error)
+                        logger.error(error)
+            else:
+                error = f"invalid transition from {current_state} to {target_state} for plan {plan_id}"
+                errors.append(error)
+                logger.warning(error)
 
-        return CanonicalResponse(
-            errors=[
-                f"invalid transition from {current_state} to {target_state} for plan {ulid}"
-            ]
-        )
+        self.refresh()
+        return CanonicalResponse(errors=errors) if errors else CanonicalResponse_Ok
 
     def refresh(self):
         with self.lock:
