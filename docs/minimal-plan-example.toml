@@ -1,0 +1,11 @@
+# MAST Plan — minimal example
+# File name: PLAN_<ULID>.toml
+
+owner  = "jdoe"
+merit  = 7        # 1–10
+
+[target]
+name                        = "NGC 1275"
+ra_hours                    = "03:19:48.16"   # sexagesimal or decimal hours
+dec_degrees                 = "+41:30:42.1"   # sexagesimal or decimal degrees
+requested_exposure_duration = 1800.0          # seconds, 0–3600
