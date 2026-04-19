@@ -27,12 +27,16 @@ init_log(logger)
 
 
 def _import_plan_find():
-    """Import mast-plan-find tool (hyphenated name requires importlib)."""
+    """Import mast-plan-find tool (hyphenated name and no .py extension require importlib)."""
+    import importlib.machinery
     import importlib.util
+
     tool_path = Path(__file__).resolve().parent.parent / "tools" / "mast-plan-find"
-    spec = importlib.util.spec_from_file_location("mast_plan_find", tool_path)
+    loader = importlib.machinery.SourceFileLoader("mast_plan_find", str(tool_path))
+    spec = importlib.util.spec_from_loader("mast_plan_find", loader)
+    assert spec is not None, f"Could not load mast-plan-find from {tool_path}"
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    loader.exec_module(mod)
     return mod
 
 
@@ -42,6 +46,7 @@ def _do_scrape():
 
 def _load_scraping_results():
     return _import_plan_find().load_scraping_results()
+
 
 PLAN_PATH_PATTERN: str = f"*/{Const.PlanFileNamePattern}"
 
@@ -250,7 +255,9 @@ class Planner:
     def transition_to_completed(self, plan_ids: list[str]) -> CanonicalResponse:
         return self.transition_plans(plan_ids, PlanState.completed)
 
-    def transition_plans(self, plan_ids: list[str], target_state: PlanState) -> CanonicalResponse:
+    def transition_plans(
+        self, plan_ids: list[str], target_state: PlanState
+    ) -> CanonicalResponse:
         errors = []
         for plan_id in plan_ids:
             result = self.locate_plan(plan_id)
