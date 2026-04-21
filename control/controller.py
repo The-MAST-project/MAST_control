@@ -8,7 +8,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Lock
-from typing import Any, Literal, Set
+from typing import Annotated, Any, Literal, Set, Union
 
 import httpx
 from fastapi import APIRouter, WebSocket
@@ -31,9 +31,10 @@ from common.models.statuses import (
     SiteStatus,
     SpecStatus,
 )
+from common.models.assignments import AssignmentNotification
 from common.notifications import UiUpdateNotifications
 from common.spec import GratingNames, SpecInstruments
-from common.tasks.models import AcquisitionPathNotification
+from pydantic import Field
 from common.utils import (
     RepeatTimer,
     function_name,
@@ -905,60 +906,60 @@ class Controller(Activities):
             self.in_progress = None
         return CanonicalResponse_Ok
 
-    async def task_acquisition_path_notification(
-        self, notification: AcquisitionPathNotification
+
+    async def notifications_endpoint(
+        self,
+        data: Annotated[
+            Union[UiUpdateNotifications, AssignmentNotification],
+            Field(discriminator="type"),
+        ],
     ):
         """
-        Receives locations of products related to a running task:
-        - from units: type: 'autofocus' or 'acquisition'
-        - from spec: type: 'spec', folder containing the spec's acquisition
-        :param notification:
-        :return:
+        Unified notification endpoint. Dispatches on data.type:
+        - 'ui_notification': relay to Django for SSE broadcast
+        - 'assignment_notification': update run folder symlinks + relay to Django
         """
         op = function_name()
-        if self.in_progress is None:
-            logger.error(f"{function_name}: no in_progress")
+        logger.info(f"{op}: type={data.type} from {data.initiator.hostname}")
 
-        if self.in_progress and notification.assignment_id != self.in_progress.ulid:
+        if isinstance(data, AssignmentNotification):
+            await self._handle_assignment_notification(data)
+
+        await self._relay_to_django(data)
+
+    async def _handle_assignment_notification(self, notification: AssignmentNotification):
+        op = function_name()
+        if self.in_progress is None:
+            logger.error(f"{op}: no in_progress assignment")
+            return
+
+        if notification.assignment_id != self.in_progress.ulid:
             logger.error(
-                f"ignored notification for plan/batch '{notification.assignment_id}' ('{self.in_progress.ulid=}')"
+                f"{op}: ignored notification for '{notification.assignment_id}' (in_progress='{self.in_progress.ulid}')"
             )
             return
 
-        src = notification.src
-        assert (
-            self.in_progress is not None
-            and self.in_progress.run_folder is not None
-            and notification.initiator.hostname is not None
-        )
+        if notification.shared_top is None or notification.shared_subpath is None:
+            return
+
+        assert self.in_progress.run_folder is not None
+        assert notification.initiator.hostname is not None
+        src = notification.shared_top
         dst = (
             Path(self.in_progress.run_folder)
             / notification.initiator.hostname
-            / notification.subpath
+            / notification.shared_subpath
         )
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(src, dst)
-            logger.info(f"{op}: created symlink '{src}' -> '{dst}'")
+            logger.info(f"{op}: symlink '{src}' -> '{dst}'")
         except Exception as e:
-            logger.error(f"{op}: failed to symlink '{src}' -> '{dst}' (error: {e})")
+            logger.error(f"{op}: failed to symlink '{src}' -> '{dst}': {e}")
 
-    async def notifications_endpoint(self, data: UiUpdateNotifications):
-        """
-        Listens for notifications (from units, specs and self) and pushes them to Django server
-        for dissemination to GUI clients.
-        """
+    async def _relay_to_django(self, data):
         op = function_name()
-        try:
-            logger.info(f"{op}: Received notification from {data.initiator.hostname}")
-            logger.debug(f"{op}: Full data: {data.model_dump()}")
-        except Exception as e:
-            logger.error(f"{op}: Error logging notification: {e}")
-
-        django_url = (
-            f"http://{Const.DJANGO_HOST}:{Const.DJANGO_PORT}/api/notifications/"
-        )
-
+        django_url = f"http://{Const.DJANGO_HOST}:{Const.DJANGO_PORT}/api/notifications/"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
@@ -966,16 +967,12 @@ class Controller(Activities):
                     json=data.model_dump(),
                     headers={"Content-Type": "application/json"},
                 )
-                if response.status_code == 200:
-                    logger.debug(f"{op}: Notification sent to Django successfully")
-                else:
-                    logger.warning(
-                        f"{op}: Django returned status {response.status_code}: {response.text}"
-                    )
+                if response.status_code != 200:
+                    logger.warning(f"{op}: Django returned {response.status_code}: {response.text}")
         except httpx.RequestError as e:
-            logger.error(f"{op}: Failed to send notification to Django: {e}")
+            logger.error(f"{op}: failed to reach Django: {e}")
         except Exception as e:
-            logger.error(f"{op}: Unexpected error sending notification to Django: {e}")
+            logger.error(f"{op}: unexpected error: {e}")
 
     def endpoint_config_get_users(self):
         return Config().get_users()
@@ -1146,12 +1143,6 @@ class Controller(Activities):
         #     tags=[tag],
         #     endpoint=self.execute_assigned_plan,
         # )
-        router.add_api_route(
-            base_path + "/task_acquisition_path_notification",
-            methods=["PUT"],
-            tags=[tag],
-            endpoint=self.task_acquisition_path_notification,
-        )
         router.add_api_route(
             base_path + "/notifications",
             methods=["PUT"],
