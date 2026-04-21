@@ -32,6 +32,7 @@ from common.models.statuses import (
     SpecStatus,
 )
 from common.notifications import UiUpdateNotifications
+from common.spec import GratingNames, SpecInstruments
 from common.tasks.models import AcquisitionPathNotification
 from common.utils import (
     RepeatTimer,
@@ -1005,6 +1006,35 @@ class Controller(Activities):
     def endpoint_config_get_thar_filters(self) -> CanonicalResponse:
         return CanonicalResponse(value=Config().get_thar_filters())
 
+    async def endpoint_simulate_move_fiber(
+        self, instrument: SpecInstruments
+    ) -> CanonicalResponse:
+        spec_api = SpecApi(site_name=self.preferred_site)
+        await spec_api.put(method=f"/simulate/fiber_stage/{instrument}")
+        return CanonicalResponse_Ok
+
+    async def endpoint_simulate_lightpath(
+        self, instrument: SpecInstruments, onoff: bool
+    ) -> CanonicalResponse:
+        spec_api = SpecApi(site_name=self.preferred_site)
+        await spec_api.put(
+            method="/simulate/lightpath",
+            params={"instrument": instrument, "onoff": onoff},
+        )
+        return CanonicalResponse_Ok
+
+    async def endpoint_simulate_disperser(
+        self, grating: GratingNames
+    ) -> CanonicalResponse:
+        spec_api = SpecApi(site_name=self.preferred_site)
+        await spec_api.put(method=f"/simulate/grating_stage/{grating}")
+        return CanonicalResponse_Ok
+
+    async def endpoint_simulate_focus(self, preset: GratingNames) -> CanonicalResponse:
+        spec_api = SpecApi(site_name=self.preferred_site)
+        await spec_api.put(method=f"/simulate/focus_stage/{preset}")
+        return CanonicalResponse_Ok
+
     def startup(self):
         pass
 
@@ -1134,5 +1164,34 @@ class Controller(Activities):
         #     plans_base + "/execute_assigned_plan",   base_path + "/task_acquisition_path_notification",
         #     tags=[tag],"PUT"],
         #     endpoint=self.execute_assigned_plan,            tags=[tag],
+
+        tag = "Simulation"
+        router.add_api_route(
+            base_path + "/simulate/fiber_stage",
+            methods=["POST"],
+            tags=[tag],
+            endpoint=self.endpoint_simulate_move_fiber,
+        )
+
+        router.add_api_route(
+            base_path + "/simulate/lightpath",
+            methods=["POST"],
+            tags=[tag],
+            endpoint=self.endpoint_simulate_lightpath,
+        )
+
+        router.add_api_route(
+            base_path + "/simulate/focus_stage",
+            methods=["POST"],
+            tags=[tag],
+            endpoint=self.endpoint_simulate_focus,
+        )
+
+        router.add_api_route(
+            base_path + "/simulate/disperser_stage",
+            methods=["POST"],
+            tags=[tag],
+            endpoint=self.endpoint_simulate_disperser,
+        )
 
         return router
