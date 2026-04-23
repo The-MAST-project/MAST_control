@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
 
-from common.config import Config
+from MAST_common.config import Config
 from control.controller import Controller
 from control.data_server import DataServer
 
@@ -69,7 +69,7 @@ if __name__ == "__main__":
     )
     import logging
 
-    from common.mast_logging import init_log
+    from MAST_common.mast_logging import init_log
 
     logger = logging.Logger("uvicorn")
     init_log(
