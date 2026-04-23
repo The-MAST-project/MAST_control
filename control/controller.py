@@ -33,6 +33,7 @@ from MAST_common.models.statuses import (
 )
 from MAST_common.notifications import UiUpdateNotifications
 from MAST_common.tasks.models import AcquisitionPathNotification
+from MAST_common.hostname import get_hostname
 from MAST_common.utils import (
     RepeatTimer,
     function_name,
@@ -386,7 +387,7 @@ class Controller(Activities):
 
     @property
     def name(self) -> str:
-        return socket.gethostname()
+        return get_hostname()
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -408,7 +409,7 @@ class Controller(Activities):
         self._terminated = False
 
         self.activity_notification_clients: Set[WebSocket] = set()
-        self.hostname = socket.gethostname().split(".")[0]
+        self.hostname = get_hostname()
 
         self.preferred_site = None
         match self.hostname:

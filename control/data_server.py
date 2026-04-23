@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from MAST_common.hostname import get_hostname
 from MAST_common.canonical import CanonicalResponse
 from MAST_common.config import Config
 from MAST_common.const import Const
@@ -33,7 +34,7 @@ class DataServer:
 
     @property
     def name(self) -> str:
-        return socket.gethostname()
+        return get_hostname()
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
