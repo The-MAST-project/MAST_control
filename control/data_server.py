@@ -10,11 +10,11 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from common.canonical import CanonicalResponse
-from common.config import Config
-from common.const import Const
-from common.mast_logging import init_log
-from common.proxy import ProxyContext
+from MAST_common.canonical import CanonicalResponse
+from MAST_common.config import Config
+from MAST_common.const import Const
+from MAST_common.mast_logging import init_log
+from MAST_common.proxy import ProxyContext
 
 logger = logging.getLogger("mast.control.data_server")
 init_log(logger)

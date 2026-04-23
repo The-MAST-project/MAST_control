@@ -1,3 +1,4 @@
+-e ../MAST_common
 annotated-types
 anyio
 astropy
