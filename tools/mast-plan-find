@@ -24,9 +24,9 @@ _UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from common.models.plans import Plan
-from common.models.plan_scraping import ScrapingResults, OwnersModel
-from common.utils import time_stamp
+from MAST_common.models.plans import Plan
+from MAST_common.models.plan_scraping import ScrapingResults, OwnersModel
+from MAST_common.utils import time_stamp
 from control.planning import PlanState
 
 # ── constants ─────────────────────────────────────────────────────────────────
