@@ -189,7 +189,7 @@ def make_plan_toml(
     doc.add("owner", "mockup.scientist")
     doc.add("mockup", True)
     doc.add("merit", merit)
-    doc.add("requested_units", ["mast00"])
+    doc.add("required_units", 1)
 
     if pool == "pending":
         doc.add("approved", True)

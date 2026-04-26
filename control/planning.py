@@ -141,7 +141,7 @@ class NewPlanTemplate(BaseModel):
     approved: bool = False
     production: bool = True
     quorum: int = 1
-    requested_units: list[str] = []
+    required_units: int = 1
     target: dict = Field(
         default_factory=lambda: {
             "ra_hours": None,

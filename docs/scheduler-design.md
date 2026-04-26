@@ -57,7 +57,7 @@ Plan state is not stored as a field — it is tracked by which filesystem subfol
 **Target** (`plan.target`):
 
 | Field | Type | Description |
-|-------|------|-------------|
+|-------|------|-------------|++
 | `ra_hours` | `float` | Right ascension in decimal hours |
 | `dec_degrees` | `float` | Declination in decimal degrees |
 | `requested_exposure_duration` | `float` | Preferred exposure duration (seconds, ≤ 3600) |

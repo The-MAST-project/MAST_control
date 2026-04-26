@@ -2,7 +2,7 @@ ulid = "01KMTBEQ0P7X37BNM7SGXZXSY7"
 owner = "mockup.scientist"
 mockup = true
 merit = 3
-requested_units = ["mast00"]
+required_units = 1
 approved = true
 
 [target]

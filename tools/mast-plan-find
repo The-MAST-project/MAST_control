@@ -377,7 +377,7 @@ def do_scrape(force: bool = False):
     owners_by_uuid: dict[str, str | None] = {}
     owners_by_name: set[str] = set()
     classifications: set[str] = set()
-    requested_units: set[str] = set()
+    required_units: set[int] = set()
     count = 0
 
     for _state, toml_path in iter_plans():
@@ -393,8 +393,8 @@ def do_scrape(force: bool = False):
                 owners_by_name.add(plan.owner)
         if plan.target and plan.target.science and plan.target.science.classification:
             classifications.add(plan.target.science.classification)
-        for unit in (plan.requested_units or []):
-            requested_units.add(unit)
+        if plan.required_units:
+            required_units.add(plan.required_units)
         count += 1
 
     uuid_display = _fetch_uuid_display_map()
@@ -411,7 +411,7 @@ def do_scrape(force: bool = False):
         owners=owner_models,
         classifications=sorted(classifications),
         known_classifications=load_known_classifications(),
-        requested_units=sorted(requested_units),
+        required_units=min(required_units) if required_units else None,
         scraped_at=time_stamp(),
     )
     sr_path = files_folder() / "scraping_results.json"

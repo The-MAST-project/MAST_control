@@ -52,9 +52,8 @@ timeout_to_guiding = 300
 
 # --- Unit assignment ---
 
-# requested_units: specific unit names the scheduler should try to allocate.
-# Leave empty [] to let the scheduler choose freely from available units.
-requested_units = ["mast01", "mast02"]
+# required_units: number of units the scheduler must allocate for this plan.
+required_units = 2
 
 # allocated_units: filled in by the scheduler at runtime. Do not set manually.
 allocated_units = []

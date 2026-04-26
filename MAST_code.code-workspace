@@ -1,0 +1,25 @@
+{
+  "folders": [
+    {
+      "path": "../MAST_config_db",
+    },
+    {
+      "path": ".",
+    },
+    {
+      "path": "../MAST_gui",
+    },
+    {
+      "path": "../MAST_spec",
+    },
+    {
+      "path": "../MAST_unit.2024-12-12",
+    },
+    {
+      "path": "../mast-claude-config",
+    },
+  ],
+  "settings": {
+    "makefile.configureOnOpen": false,
+  },
+}

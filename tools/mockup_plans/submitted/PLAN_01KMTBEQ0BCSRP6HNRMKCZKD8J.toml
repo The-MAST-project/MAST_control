@@ -2,7 +2,7 @@ ulid = "01KMTBEQ0BCSRP6HNRMKCZKD8J"
 owner = "mockup.scientist"
 mockup = true
 merit = 6
-requested_units = ["mast00"]
+required_units = 1
 
 [target]
 ra_hours = 13.883
