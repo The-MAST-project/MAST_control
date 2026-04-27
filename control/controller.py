@@ -911,7 +911,7 @@ class Controller(Activities):
             Union[UiUpdateNotifications, AssignmentNotification],
             Field(discriminator="type"),
         ],
-    ):
+    ) -> CanonicalResponse:
         """
         Unified notification endpoint. Dispatches on data.type:
         - 'ui_notification': relay to Django for SSE broadcast
@@ -926,6 +926,7 @@ class Controller(Activities):
             await self._handle_assignment_notification(data)
 
         await self._relay_to_django(data)
+        return CanonicalResponse_Ok
 
     async def _handle_assignment_notification(
         self, notification: AssignmentNotification
