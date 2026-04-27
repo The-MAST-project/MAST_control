@@ -141,7 +141,7 @@ class NewPlanTemplate(BaseModel):
     approved: bool = False
     production: bool = True
     quorum: int = 1
-    required_units: int = 1
+    requested_units: list[str] = []
     target: dict = Field(
         default_factory=lambda: {
             "ra_hours": None,
@@ -428,7 +428,7 @@ class Planner:
 
             plan_dict = plan.model_dump(
                 mode="json",
-                exclude={"full_path", "spec_api", "commited_unit_apis"},
+                exclude={"full_path", "spec_api", "committed_unit_apis"},
                 exclude_none=True,
             )
             submitted_event = EventModel(what="submitted").model_dump(

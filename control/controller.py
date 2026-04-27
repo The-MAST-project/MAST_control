@@ -918,7 +918,9 @@ class Controller(Activities):
         - 'assignment_notification': update run folder symlinks + relay to Django
         """
         op = function_name()
-        logger.info(f"{op}: type={data.type} from {data.initiator.hostname}")
+        logger.info(
+            f"{op}: type={data.type} from {(data.initiator and data.initiator.hostname) or 'unknown initiator'}"
+        )
 
         if isinstance(data, AssignmentNotification):
             await self._handle_assignment_notification(data)
@@ -943,6 +945,7 @@ class Controller(Activities):
             return
 
         assert self.in_progress.run_folder is not None
+        assert notification.initiator is not None
         assert notification.initiator.hostname is not None
         src = notification.shared_top
         dst = (
