@@ -672,10 +672,10 @@ class Controller(Activities):
                 return response.value
             else:
                 logger.error(f"{function_name()}: {response.errors}")
-                return BaseStatus(detected=False, powered=False, operational=False)
+                return BaseStatus(detected=False, operational=False)
         except Exception as e:
             logger.error(f"Error fetching {api_type} status: {e}")
-            return BaseStatus(detected=False, powered=False, operational=False)
+            return BaseStatus(detected=False, operational=False)
 
     def status_from_dict(
         self, api: SpecApi | ControllerApi | UnitApi, data: dict
@@ -708,7 +708,7 @@ class Controller(Activities):
                 logger.error(
                     f"Failed to validate status data for {type(api).__name__}: {e}; also failed BaseStatus: {e2}"
                 )
-                return BaseStatus(detected=False, powered=False, operational=False)
+                return BaseStatus(detected=False, operational=False)
 
         return validated_status
 
@@ -739,26 +739,30 @@ class Controller(Activities):
 
     def status(self) -> CanonicalResponse:
         """Returns statuses from cache"""
+        from common.models.statuses import UnitStatus
+
         with self.lock:
             ret = SitesStatus(timestamp=time_stamp(), sites={})
 
             for site_name in [s.name for s in self.config.managed_sites]:
                 site_cache = self.status_cache[site_name]
 
-                unit_statuses = {}
+                unit_statuses: dict[str, UnitStatus] = {}
                 for unit_name, cached_value in site_cache["units"].items():
                     if cached_value.value:
                         unit_statuses[unit_name] = cached_value.value
-                        unit_statuses[unit_name].powered = self.power_switches[
-                            site_name
-                        ][unit_name].get_outlet_state("Computer")
+                        unit_statuses[unit_name].powered = (
+                            self.power_switches[site_name][unit_name].get_outlet_state(
+                                "Computer"
+                            )
+                            or False
+                        )
 
                 spec_status = (
                     site_cache["spec"].value
                     if site_cache["spec"]
                     else SpecStatus(
                         detected=False,
-                        powered=False,
                         operational=False,
                         why_not_operational=["No status available"],
                     )
@@ -767,7 +771,6 @@ class Controller(Activities):
                 try:
                     ret.sites[site_name] = SiteStatus(
                         controller=ControllerStatus(
-                            powered=True,
                             detected=True,
                             operational=True,
                         ),
@@ -778,13 +781,11 @@ class Controller(Activities):
                     logger.error(f"Validation error for site '{site_name}': {e}")
                     ret.sites[site_name] = SiteStatus(
                         controller=ControllerStatus(
-                            powered=True,
                             detected=True,
                             operational=True,
                         ),
                         spec=SpecStatus(
                             detected=False,
-                            powered=False,
                             operational=False,
                             why_not_operational=[f"Validation error: {e}"],
                         ),
@@ -799,7 +800,6 @@ class Controller(Activities):
         """
         return CanonicalResponse(
             value=ControllerStatus(
-                powered=True,
                 detected=True,
                 operational=True,
             )
