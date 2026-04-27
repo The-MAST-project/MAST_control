@@ -12,7 +12,7 @@ from typing import Annotated, Any, Literal, Set, Union
 
 import httpx
 from fastapi import APIRouter, WebSocket
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from common.activities import Activities, ControllerActivities
 from common.api import ControllerApi, SpecApi, UnitApi
@@ -23,18 +23,17 @@ from common.dlipowerswitch import (
     DliPowerSwitch,
 )
 from common.mast_logging import init_log
+from common.models.assignments import AssignmentNotification
 from common.models.batches import Batch
 from common.models.statuses import (
-    BasicStatus,
+    BaseStatus,
     ControllerStatus,
     SitesStatus,
     SiteStatus,
     SpecStatus,
 )
-from common.models.assignments import AssignmentNotification
 from common.notifications import UiUpdateNotifications
 from common.spec import GratingNames, SpecInstruments
-from pydantic import Field
 from common.utils import (
     RepeatTimer,
     function_name,
@@ -177,7 +176,7 @@ init_log(logger)
 #         ).start()
 
 #     def on_timer(self):
-#         short_status = BasicStatus(
+#         short_status = BaseStatus(
 #             detected=False,
 #             powered=self.powered,
 #             operational=False,
@@ -196,7 +195,7 @@ init_log(logger)
 #             pass
 
 #     @property
-#     def status(self) -> "UnitStatus | BasicStatus | None":
+#     def status(self) -> "UnitStatus | BaseStatus | None":
 #         """
 #         Return cached unit status. Priority:
 #         1) in-memory value self._status
@@ -673,16 +672,16 @@ class Controller(Activities):
                 return response.value
             else:
                 logger.error(f"{function_name()}: {response.errors}")
-                return BasicStatus(detected=False, powered=False, operational=False)
+                return BaseStatus(detected=False, powered=False, operational=False)
         except Exception as e:
             logger.error(f"Error fetching {api_type} status: {e}")
-            return BasicStatus(detected=False, powered=False, operational=False)
+            return BaseStatus(detected=False, powered=False, operational=False)
 
     def status_from_dict(
         self, api: SpecApi | ControllerApi | UnitApi, data: dict
     ) -> Any:
         from common.models.statuses import (
-            BasicStatus,
+            BaseStatus,
             ControllerStatus,
             FullUnitStatus,
             SpecStatus,
@@ -704,12 +703,12 @@ class Controller(Activities):
             validated_status = expected_status_type.model_validate(data)
         except Exception as e:
             try:
-                validated_status = BasicStatus.model_validate(data)
+                validated_status = BaseStatus.model_validate(data)
             except Exception as e2:
                 logger.error(
-                    f"Failed to validate status data for {type(api).__name__}: {e}; also failed BasicStatus: {e2}"
+                    f"Failed to validate status data for {type(api).__name__}: {e}; also failed BaseStatus: {e2}"
                 )
-                return BasicStatus(detected=False, powered=False, operational=False)
+                return BaseStatus(detected=False, powered=False, operational=False)
 
         return validated_status
 
@@ -906,7 +905,6 @@ class Controller(Activities):
             self.in_progress = None
         return CanonicalResponse_Ok
 
-
     async def notifications_endpoint(
         self,
         data: Annotated[
@@ -927,7 +925,9 @@ class Controller(Activities):
 
         await self._relay_to_django(data)
 
-    async def _handle_assignment_notification(self, notification: AssignmentNotification):
+    async def _handle_assignment_notification(
+        self, notification: AssignmentNotification
+    ):
         op = function_name()
         if self.in_progress is None:
             logger.error(f"{op}: no in_progress assignment")
@@ -959,7 +959,9 @@ class Controller(Activities):
 
     async def _relay_to_django(self, data):
         op = function_name()
-        django_url = f"http://{Const.DJANGO_HOST}:{Const.DJANGO_PORT}/api/notifications/"
+        django_url = (
+            f"http://{Const.DJANGO_HOST}:{Const.DJANGO_PORT}/api/notifications/"
+        )
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
@@ -968,7 +970,9 @@ class Controller(Activities):
                     headers={"Content-Type": "application/json"},
                 )
                 if response.status_code != 200:
-                    logger.warning(f"{op}: Django returned {response.status_code}: {response.text}")
+                    logger.warning(
+                        f"{op}: Django returned {response.status_code}: {response.text}"
+                    )
         except httpx.RequestError as e:
             logger.error(f"{op}: failed to reach Django: {e}")
         except Exception as e:

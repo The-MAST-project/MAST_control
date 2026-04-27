@@ -2,8 +2,8 @@
 """mast-plan-find — Search and scrape MAST observation plans"""
 
 # ── venv auto-loader ──────────────────────────────────────────────────────────
-import sys
 import os
+import sys
 from pathlib import Path
 
 _venv_dir = Path(__file__).resolve().parent.parent / ".venv"
@@ -20,19 +20,21 @@ from typing import Any
 
 from pydantic import ValidationError
 
-_UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from common.models.plan_scraping import OwnersModel, ScrapingResults
 from common.models.plans import Plan
-from common.models.plan_scraping import ScrapingResults, OwnersModel
 from common.utils import time_stamp
 from control.planning import PlanState
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
 POOL_STATES = [s for s in PlanState if s != PlanState.in_progress]
-POOL_FLAGS   = {f"-{s.value}": s for s in POOL_STATES}
+POOL_FLAGS = {f"-{s.value}": s for s in POOL_STATES}
 
 DEFAULT_KNOWN_CLASSIFICATIONS = [
     # White Dwarf science
@@ -69,20 +71,23 @@ DEFAULT_KNOWN_CLASSIFICATIONS = [
 
 # (dot-path, label, match-type)
 SEARCHABLE_FIELDS = [
-    ("target.name",                   "Target name",    "text"),
-    ("target.magnitude",              "Magnitude",      "number"),
-    ("target.science.case",           "Science case",   "text"),
+    ("target.name", "Target name", "text"),
+    ("target.magnitude", "Magnitude", "number"),
+    ("target.science.case", "Science case", "text"),
     ("target.science.classification", "Classification", "text"),
-    ("spec_assignment.instrument",    "Instrument",     "exact"),
-    ("owner.name",                    "Owner display name", "text"),
-    ("owner.uuid",                    "Owner UUID",         "exact"),
+    ("spec_assignment.instrument", "Instrument", "exact"),
+    ("owner.name", "Owner display name", "text"),
+    ("owner.uuid", "Owner UUID", "exact"),
 ]
 
 # flag → (field_path, description)
 BOOLEAN_PREDICATES = {
     "-approved": ("approved", "Approved plans only"),
-    "-mockup":   ("mockup",   "Mockup plans only"),
-    "-valid":    ("_valid",   "Plans that pass validity check (target coords + instrument set)"),
+    "-mockup": ("mockup", "Mockup plans only"),
+    "-valid": (
+        "_valid",
+        "Plans that pass validity check (target coords + instrument set)",
+    ),
 }
 
 VALUE_PREDICATES = {f"-{f[0]}": f for f in SEARCHABLE_FIELDS}
@@ -90,7 +95,7 @@ VALUE_PREDICATES = {f"-{f[0]}": f for f in SEARCHABLE_FIELDS}
 
 # ── path helpers ──────────────────────────────────────────────────────────────
 
-PLANS_ROOT  = Path("/Storage/mast-share/MAST/plans")
+PLANS_ROOT = Path("/Storage/mast-share/MAST/plans")
 FILES_FOLDER = PLANS_ROOT / "files"
 
 
@@ -107,13 +112,20 @@ def ensure_files_folder():
         kc_path.write_text(json.dumps(DEFAULT_KNOWN_CLASSIFICATIONS, indent=2))
         print(f"Initialized {kc_path}", file=sys.stderr)
 
-    gui_static = Path(__file__).resolve().parent.parent.parent / "MAST_gui" / "static" / "plan-files"
+    gui_static = (
+        Path(__file__).resolve().parent.parent.parent
+        / "MAST_gui"
+        / "static"
+        / "plan-files"
+    )
     if not gui_static.exists() and not gui_static.is_symlink():
         try:
             gui_static.symlink_to(folder)
             print(f"Created symlink {gui_static} → {folder}", file=sys.stderr)
         except OSError as e:
-            print(f"Warning: could not create symlink {gui_static}: {e}", file=sys.stderr)
+            print(
+                f"Warning: could not create symlink {gui_static}: {e}", file=sys.stderr
+            )
 
 
 def load_known_classifications() -> list[str]:
@@ -133,7 +145,7 @@ def load_scraping_results() -> ScrapingResults | None:
 def iter_plans(pools: list[PlanState] | None = None):
     """Yield (pool_state, toml_path) for all plans in the specified pools (default: all)."""
     plans_root = PLANS_ROOT
-    for state in (pools or POOL_STATES):
+    for state in pools or POOL_STATES:
         folder = plans_root / state.value
         if not folder.is_dir():
             continue
@@ -144,6 +156,7 @@ def iter_plans(pools: list[PlanState] | None = None):
 # ── field navigation ──────────────────────────────────────────────────────────
 
 _uuid_display_cache: dict[str, str] | None = None
+
 
 def _uuid_display() -> dict[str, str]:
     global _uuid_display_cache
@@ -185,6 +198,7 @@ def match_value(field_val: Any, value: str, match_type: str) -> bool:
 
 # ── validity check ────────────────────────────────────────────────────────────
 
+
 def is_plan_valid(plan: Plan) -> bool:
     """A plan is valid when it has target coordinates and a spectrograph instrument set."""
     if plan.target is None:
@@ -198,15 +212,21 @@ def is_plan_valid(plan: Plan) -> bool:
 
 # ── predicate / expression tree ───────────────────────────────────────────────
 
+
 class Predicate:
-    def __init__(self, field_path: str, value: str | None = None,
-                 boolean: bool = False, match_type: str = "text",
-                 negated: bool = False):
+    def __init__(
+        self,
+        field_path: str,
+        value: str | None = None,
+        boolean: bool = False,
+        match_type: str = "text",
+        negated: bool = False,
+    ):
         self.field_path = field_path
-        self.value      = value
-        self.boolean    = boolean
+        self.value = value
+        self.boolean = boolean
         self.match_type = match_type
-        self.negated    = negated
+        self.negated = negated
 
     def match(self, plan: Plan) -> bool:
         if self.boolean:
@@ -214,14 +234,16 @@ class Predicate:
                 result = is_plan_valid(plan)
             else:
                 result = bool(get_field_value(plan, self.field_path))
-        else:
-            result = match_value(get_field_value(plan, self.field_path), self.value, self.match_type)
+        elif self.value is not None:
+            result = match_value(
+                get_field_value(plan, self.field_path), self.value, self.match_type
+            )
         return not result if self.negated else result
 
 
 class ExprNode:
     def __init__(self, op: str = "and"):
-        self.op: str = op          # "and" | "or" | "pred"
+        self.op: str = op  # "and" | "or" | "pred"
         self.pred: Predicate | None = None
         self.children: list[ExprNode] = []
 
@@ -232,7 +254,7 @@ class ExprNode:
         return n
 
     def evaluate(self, plan: Plan) -> bool:
-        if self.op == "pred":
+        if self.op == "pred" and self.pred is not None:
             return self.pred.match(plan)
         if self.op == "and":
             return all(c.evaluate(plan) for c in self.children)
@@ -244,7 +266,7 @@ class ExprNode:
 def build_expr_tree(nodes: list[tuple[str, ExprNode]]) -> ExprNode:
     """Build left-associative expression tree from (pending_op, node) pairs."""
     if not nodes:
-        return ExprNode(op="and")   # empty → match all
+        return ExprNode(op="and")  # empty → match all
     result = nodes[0][1]
     for op, node in nodes[1:]:
         if op == "or":
@@ -262,8 +284,17 @@ def build_expr_tree(nodes: list[tuple[str, ExprNode]]) -> ExprNode:
 
 # ── argument parser ───────────────────────────────────────────────────────────
 
+
 def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]:
-    mode = {"scrape": False, "list_criteria": False, "list_owners": False, "list_classifications": False, "count": False, "help": False, "exec": None}
+    mode = {
+        "scrape": False,
+        "list_criteria": False,
+        "list_owners": False,
+        "list_classifications": False,
+        "count": False,
+        "help": False,
+        "exec": None,
+    }
     pools: list[PlanState] | None = None
     nodes: list[tuple[str, ExprNode]] = []
     pending_op = "and"
@@ -295,7 +326,9 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
                 cmd.append(argv[i])
                 i += 1
             if not cmd:
-                print("Error: -exec requires a command terminated by ;", file=sys.stderr)
+                print(
+                    "Error: -exec requires a command terminated by ;", file=sys.stderr
+                )
                 sys.exit(1)
             mode["exec"] = cmd
         elif token in POOL_FLAGS:
@@ -304,11 +337,18 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
             pools.append(POOL_FLAGS[token])
         elif token in BOOLEAN_PREDICATES:
             field_path, _ = BOOLEAN_PREDICATES[token]
-            nodes.append((pending_op, ExprNode.leaf(Predicate(field_path, boolean=True))))
+            nodes.append(
+                (pending_op, ExprNode.leaf(Predicate(field_path, boolean=True)))
+            )
             pending_op = "and"
         elif token.startswith("-not-") and f"-{token[5:]}" in BOOLEAN_PREDICATES:
             field_path, _ = BOOLEAN_PREDICATES[f"-{token[5:]}"]
-            nodes.append((pending_op, ExprNode.leaf(Predicate(field_path, boolean=True, negated=True))))
+            nodes.append(
+                (
+                    pending_op,
+                    ExprNode.leaf(Predicate(field_path, boolean=True, negated=True)),
+                )
+            )
             pending_op = "and"
         elif token in VALUE_PREDICATES:
             if i + 1 >= len(argv):
@@ -316,9 +356,14 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
                 sys.exit(1)
             i += 1
             field_path, _, match_type = VALUE_PREDICATES[token]
-            nodes.append((pending_op, ExprNode.leaf(
-                Predicate(field_path, value=argv[i], match_type=match_type)
-            )))
+            nodes.append(
+                (
+                    pending_op,
+                    ExprNode.leaf(
+                        Predicate(field_path, value=argv[i], match_type=match_type)
+                    ),
+                )
+            )
             pending_op = "and"
         else:
             print(f"Warning: unknown argument '{token}', ignoring", file=sys.stderr)
@@ -330,11 +375,15 @@ def parse_args(argv: list[str]) -> tuple[list[PlanState] | None, ExprNode, dict]
 
 # ── mode implementations ──────────────────────────────────────────────────────
 
+
 def _fetch_uuid_display_map() -> dict[str, str]:
     """Load {uuid: display} from users.json written by 'manage.py export_users'."""
     users_path = files_folder() / "users.json"
     if not users_path.exists():
-        print(f"Warning: {users_path} not found — run 'manage.py export_users' to resolve owner names", file=sys.stderr)
+        print(
+            f"Warning: {users_path} not found — run 'manage.py export_users' to resolve owner names",
+            file=sys.stderr,
+        )
         return {}
     try:
         data = json.loads(users_path.read_text())
@@ -350,12 +399,13 @@ def _needs_rescrape() -> bool:
     if sr is None:
         return True
     from datetime import datetime, timezone
+
     try:
-        scraped_at = datetime.fromisoformat(sr.scraped_at.replace('Z', '+00:00'))
+        scraped_at = datetime.fromisoformat(sr.scraped_at.replace("Z", "+00:00"))
     except Exception:
         return True
     folder = files_folder()
-    for aux in ('users.json', 'known_classifications.json'):
+    for aux in ("users.json", "known_classifications.json"):
         p = folder / aux
         if p.exists():
             mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
@@ -370,7 +420,10 @@ def _needs_rescrape() -> bool:
 
 def do_scrape(force: bool = False):
     if not force and not _needs_rescrape():
-        print("Scraping skipped — no plans or aux files newer than scraped_at.", file=sys.stderr)
+        print(
+            "Scraping skipped — no plans or aux files newer than scraped_at.",
+            file=sys.stderr,
+        )
         return
     ensure_files_folder()
     print("Scraping plans...", file=sys.stderr)
@@ -402,10 +455,10 @@ def do_scrape(force: bool = False):
         if uid in uuid_display:
             owners_by_uuid[uid] = uuid_display[uid]
 
-    owner_models = (
-        [OwnersModel(name=owners_by_uuid[uid], uuid=uid) for uid in sorted(owners_by_uuid)] +
-        [OwnersModel(name=name, uuid=None) for name in sorted(owners_by_name)]
-    )
+    owner_models = [
+        OwnersModel(name=owners_by_uuid[uid], uuid=uid)
+        for uid in sorted(owners_by_uuid)
+    ] + [OwnersModel(name=name, uuid=None) for name in sorted(owners_by_name)]
 
     results = ScrapingResults(
         owners=owner_models,
@@ -449,12 +502,17 @@ def do_list_science_classifications():
     if results is None:
         print("No scraping results found. Run with -scrape first.", file=sys.stderr)
         sys.exit(1)
-    for c in results.classifications:
-        print(c)
+    if results is not None and results.classifications is not None:
+        for c in results.classifications:
+            print(c)
 
 
-def do_search(pools: list[PlanState] | None, expr: ExprNode, count_only: bool = False,
-              exec_cmd: list[str] | None = None):
+def do_search(
+    pools: list[PlanState] | None,
+    expr: ExprNode,
+    count_only: bool = False,
+    exec_cmd: list[str] | None = None,
+):
     found = 0
     for state, toml_path in iter_plans(pools):
         plan = None
@@ -467,7 +525,9 @@ def do_search(pools: list[PlanState] | None, expr: ExprNode, count_only: bool = 
                 cmd = [arg.replace("{}", str(toml_path)) for arg in exec_cmd]
                 subprocess.run(cmd)
             elif not count_only:
-                target_name = (plan.target.name or "unnamed") if plan.target else "no target"
+                target_name = (
+                    (plan.target.name or "unnamed") if plan.target else "no target"
+                )
                 owner = get_field_value(plan, "owner.name") or "?"
                 print(f"{toml_path}  [{state.value}]  {target_name}  owner={owner}")
             found += 1
@@ -528,6 +588,7 @@ Examples:
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
+
 
 def main():
     argv = sys.argv[1:]
