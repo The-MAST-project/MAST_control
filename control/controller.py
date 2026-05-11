@@ -1032,7 +1032,7 @@ class Controller(Activities):
         self, grating: GratingNames
     ) -> CanonicalResponse:
         spec_api = SpecApi(site_name=self.preferred_site)
-        await spec_api.put(method=f"/simulate/grating_stage/{grating}")
+        await spec_api.put(method=f"/simulate/disperser_stage/{grating}")
         return CanonicalResponse_Ok
 
     async def endpoint_simulate_focus(self, preset: GratingNames) -> CanonicalResponse:
