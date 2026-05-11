@@ -618,10 +618,9 @@ class Controller(Activities):
                     cached_value.fetcher = future
 
                     future.add_done_callback(
-                        lambda f,
-                        sn=site_name,
-                        cn=unit_name,
-                        cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
+                        lambda f, sn=site_name, cn=unit_name, cv=cached_value: (
+                            self._on_fetch_complete(f, sn, cn, cv)
+                        )
                     )
 
             # Check spec
@@ -632,10 +631,9 @@ class Controller(Activities):
                     cached_value.fetcher = future
 
                     future.add_done_callback(
-                        lambda f,
-                        sn=site_name,
-                        cn="spec",
-                        cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
+                        lambda f, sn=site_name, cn="spec", cv=cached_value: (
+                            self._on_fetch_complete(f, sn, cn, cv)
+                        )
                     )
 
             # Check controller
@@ -646,10 +644,9 @@ class Controller(Activities):
                     cached_value.fetcher = future
 
                     future.add_done_callback(
-                        lambda f,
-                        sn=site_name,
-                        cn="controller",
-                        cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
+                        lambda f, sn=site_name, cn="controller", cv=cached_value: (
+                            self._on_fetch_complete(f, sn, cn, cv)
+                        )
                     )
 
     def _fetch_status(self, cached_value: CachedValue) -> Any:
