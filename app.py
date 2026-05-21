@@ -1,13 +1,18 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import ORJSONResponse, RedirectResponse
 
+from common.build_report_api import make_build_report_router
 from common.config import Config
 from control.controller import Controller
 from control.data_server import DataServer
+
+# MAST_control/app.py -> workspace is parent directory containing all MAST_* repos
+_WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 
 
 @asynccontextmanager
@@ -50,6 +55,7 @@ app.add_middleware(
 
 app.include_router(Controller().api_router)
 app.include_router(DataServer().api_router)
+app.include_router(make_build_report_router(_WORKSPACE_ROOT))
 
 
 @app.get("/favicon.ico")
