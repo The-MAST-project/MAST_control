@@ -1,0 +1,362 @@
+#!/usr/bin/env python3
+"""mast-release — coordinate annotated git tags across every MAST_* repo.
+
+Tags are the single source of truth for release identity across the MAST
+ecosystem. This CLI applies the same annotated tag at HEAD of every MAST_*
+repo in the workspace, then runs the build report and offers an explicit
+push prompt only if the report comes back coherent.
+
+Usage:
+    mast-release tag <name> <message>            # tag locally
+    mast-release tag <name> <message> --yes      # skip pre-tag confirmation
+    mast-release push <name>                     # push existing tag to origin
+    mast-release list [pattern]                  # show tags across all repos
+"""
+
+# ── venv auto-loader ──────────────────────────────────────────────────────────
+import os
+import sys
+from pathlib import Path
+
+_venv_dir = Path(__file__).resolve().parent.parent / ".venv"
+_venv_python = _venv_dir / "bin" / "python"
+if _venv_python.exists() and Path(sys.prefix) != _venv_dir:
+    os.execv(str(_venv_python), [str(_venv_python)] + sys.argv)
+
+# ── imports ───────────────────────────────────────────────────────────────────
+import argparse  # noqa: E402
+import subprocess  # noqa: E402
+from dataclasses import dataclass  # noqa: E402
+
+# `mast-release` lives at <workspace>/MAST_control/tools/mast-release
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+
+# Reuse the build-report collector & renderer from MAST_common (vendored as
+# `common/` submodule inside MAST_control).
+sys.path.insert(0, str(WORKSPACE_ROOT / "MAST_control"))
+from common.build_report import (  # noqa: E402
+    MAST_REPO_PREFIX,
+    collect_build_report,
+    format_text,
+)
+
+EXIT_OK = 0
+EXIT_PREFLIGHT = 1
+EXIT_PARTIAL_TAG = 2
+EXIT_PUSH_GATE = 3
+EXIT_PARTIAL_PUSH = 4
+
+PUSH_REMOTE = "origin"
+
+
+@dataclass
+class RepoState:
+    name: str
+    path: Path
+    branch: str
+    head_sha: str
+    tag_at_head: bool  # True if requested tag already points at HEAD (noop)
+    error: str | None = None
+
+
+def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
+
+
+def _discover_repos() -> list[Path]:
+    repos: list[Path] = []
+    for child in sorted(WORKSPACE_ROOT.iterdir()):
+        if not child.is_dir():
+            continue
+        if not child.name.startswith(MAST_REPO_PREFIX):
+            continue
+        if not (child / ".git").exists():
+            continue
+        repos.append(child)
+    return repos
+
+
+def _preflight(repos: list[Path], tag_name: str) -> tuple[list[RepoState], list[str]]:
+    states: list[RepoState] = []
+    failures: list[str] = []
+    for repo in repos:
+        branch_res = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo)
+        head_res = _run(["git", "rev-parse", "HEAD"], repo)
+        if branch_res.returncode != 0 or head_res.returncode != 0:
+            failures.append(f"{repo.name}: cannot read git state ({branch_res.stderr.strip() or head_res.stderr.strip()})")
+            continue
+        branch = branch_res.stdout.strip()
+        head_sha = head_res.stdout.strip()
+        if branch == "HEAD":
+            failures.append(f"{repo.name}: detached HEAD")
+            continue
+
+        porcelain = _run(["git", "status", "--porcelain"], repo)
+        if porcelain.stdout.strip():
+            failures.append(f"{repo.name}: working tree dirty")
+            continue
+
+        tag_at_head = False
+        tag_check = _run(["git", "rev-parse", "--verify", f"refs/tags/{tag_name}"], repo)
+        if tag_check.returncode == 0:
+            tagged_commit = _run(["git", "rev-list", "-n", "1", f"refs/tags/{tag_name}"], repo)
+            if tagged_commit.returncode == 0 and tagged_commit.stdout.strip() == head_sha:
+                tag_at_head = True
+            else:
+                failures.append(
+                    f"{repo.name}: tag '{tag_name}' already exists at a different SHA "
+                    f"({(tagged_commit.stdout.strip() or '?')[:9]} vs HEAD {head_sha[:9]})"
+                )
+                continue
+
+        states.append(
+            RepoState(
+                name=repo.name,
+                path=repo,
+                branch=branch,
+                head_sha=head_sha,
+                tag_at_head=tag_at_head,
+            )
+        )
+    return states, failures
+
+
+def _print_plan(states: list[RepoState], tag_name: str) -> None:
+    print(f"Tag plan: {tag_name}")
+    print(f"{'Repo':<26} {'Branch':<22} {'HEAD':<10} Action")
+    print("-" * 70)
+    for s in states:
+        action = "already-tagged-noop" if s.tag_at_head else "tag"
+        print(f"{s.name:<26} {s.branch:<22} {s.head_sha[:9]:<10} {action}")
+
+
+def _confirm_by_typing(tag_name: str, prompt: str) -> bool:
+    print(prompt)
+    try:
+        entered = input("> ").strip()
+    except EOFError:
+        return False
+    if entered != tag_name:
+        print(f"Got {entered!r}, expected {tag_name!r}. Aborting.")
+        return False
+    return True
+
+
+def _apply_tags(states: list[RepoState], tag_name: str, message: str) -> list[str]:
+    failures: list[str] = []
+    for s in states:
+        if s.tag_at_head:
+            print(f"  {s.name}: already at {tag_name}, skipping")
+            continue
+        res = _run(["git", "tag", "-a", tag_name, "-m", message], s.path)
+        if res.returncode != 0:
+            failures.append(f"{s.name}: {res.stderr.strip() or 'tag failed'}")
+            print(f"  {s.name}: FAILED — {res.stderr.strip()}")
+        else:
+            print(f"  {s.name}: tagged {s.head_sha[:9]}")
+    return failures
+
+
+def _evaluate_push_gate(workspace_root: Path, tag_name: str, repos: list[Path]) -> list[str]:
+    """Return list of human-readable reasons why the push gate did not pass.
+
+    Empty list = gate passes.
+    """
+    reasons: list[str] = []
+    report = collect_build_report(workspace_root)
+    print()
+    print(format_text(report))
+    print()
+
+    if len(report.common_sha_consistency) > 1:
+        reasons.append(
+            f"MAST_common SHA drift: {len(report.common_sha_consistency)} distinct SHAs referenced"
+        )
+    for r in report.repos:
+        if r.error:
+            reasons.append(f"{r.name}: report error: {r.error}")
+
+    # Cross-check: every repo's tag must resolve to its current HEAD SHA.
+    head_by_name: dict[str, str | None] = {r.name: r.head_sha for r in report.repos}
+    for repo in repos:
+        head_sha = head_by_name.get(repo.name)
+        if head_sha is None:
+            reasons.append(f"{repo.name}: no HEAD SHA in report")
+            continue
+        tagged = _run(["git", "rev-parse", "--verify", f"refs/tags/{tag_name}^{{commit}}"], repo)
+        if tagged.returncode != 0:
+            reasons.append(f"{repo.name}: tag {tag_name} not found locally after tagging")
+            continue
+        if tagged.stdout.strip() != head_sha:
+            reasons.append(
+                f"{repo.name}: tag {tag_name} resolves to "
+                f"{tagged.stdout.strip()[:9]} but HEAD is {head_sha[:9]}"
+            )
+    return reasons
+
+
+def _push_tags(repos: list[Path], tag_name: str) -> list[str]:
+    failures: list[str] = []
+    for repo in repos:
+        res = _run(["git", "push", PUSH_REMOTE, f"refs/tags/{tag_name}"], repo)
+        if res.returncode != 0:
+            err = res.stderr.strip() or "push failed"
+            failures.append(f"{repo.name}: {err}")
+            print(f"  {repo.name}: FAILED — {err}")
+        else:
+            print(f"  {repo.name}: pushed")
+    return failures
+
+
+def cmd_tag(args: argparse.Namespace) -> int:
+    repos = _discover_repos()
+    if not repos:
+        print(f"No MAST_* repos found under {WORKSPACE_ROOT}")
+        return EXIT_PREFLIGHT
+
+    print(f"Workspace: {WORKSPACE_ROOT}")
+    print(f"Discovered {len(repos)} MAST_* repos")
+    print()
+
+    states, fails = _preflight(repos, args.name)
+    if fails:
+        print("Preflight failed:")
+        for f in fails:
+            print(f"  - {f}")
+        return EXIT_PREFLIGHT
+
+    _print_plan(states, args.name)
+    print()
+
+    if not args.yes and not _confirm_by_typing(
+        args.name,
+        f"Type the tag name to confirm tagging {len(states)} repos with '{args.name}':",
+    ):
+        return EXIT_PREFLIGHT
+
+    print()
+    print("Applying tags...")
+    tag_fails = _apply_tags(states, args.name, args.message)
+    if tag_fails:
+        print()
+        print("Tagging had failures:")
+        for f in tag_fails:
+            print(f"  - {f}")
+        return EXIT_PARTIAL_TAG
+
+    reasons = _evaluate_push_gate(WORKSPACE_ROOT, args.name, repos)
+    if reasons:
+        print("Push gate FAILED — not offering push prompt:")
+        for r in reasons:
+            print(f"  - {r}")
+        return EXIT_PUSH_GATE
+
+    print(f"Push gate passed. Tags are local-only so far on {len(repos)} repos.")
+    if not _confirm_by_typing(
+        args.name,
+        f"Push tag '{args.name}' to {PUSH_REMOTE} in all {len(repos)} repos? "
+        f"Type the tag name to confirm (anything else aborts):",
+    ):
+        print(f"Push skipped. Tags remain local. Use `mast-release push {args.name}` to push later.")
+        return EXIT_OK
+
+    print()
+    print(f"Pushing to {PUSH_REMOTE}...")
+    push_fails = _push_tags(repos, args.name)
+    if push_fails:
+        print()
+        print("Push had failures:")
+        for f in push_fails:
+            print(f"  - {f}")
+        return EXIT_PARTIAL_PUSH
+
+    print()
+    print(f"Done. Tag '{args.name}' applied and pushed across {len(repos)} repos.")
+    return EXIT_OK
+
+
+def cmd_push(args: argparse.Namespace) -> int:
+    repos = _discover_repos()
+    if not repos:
+        print(f"No MAST_* repos found under {WORKSPACE_ROOT}")
+        return EXIT_PREFLIGHT
+
+    missing: list[str] = []
+    for repo in repos:
+        res = _run(["git", "rev-parse", "--verify", f"refs/tags/{args.name}"], repo)
+        if res.returncode != 0:
+            missing.append(repo.name)
+    if missing:
+        print(f"Tag '{args.name}' missing locally in:")
+        for m in missing:
+            print(f"  - {m}")
+        print("Run `mast-release tag` first.")
+        return EXIT_PREFLIGHT
+
+    reasons = _evaluate_push_gate(WORKSPACE_ROOT, args.name, repos)
+    if reasons:
+        print("Push gate FAILED:")
+        for r in reasons:
+            print(f"  - {r}")
+        return EXIT_PUSH_GATE
+
+    if not args.yes and not _confirm_by_typing(
+        args.name,
+        f"Push tag '{args.name}' to {PUSH_REMOTE} in all {len(repos)} repos? "
+        f"Type the tag name to confirm:",
+    ):
+        return EXIT_OK
+
+    print()
+    print(f"Pushing to {PUSH_REMOTE}...")
+    push_fails = _push_tags(repos, args.name)
+    if push_fails:
+        print()
+        print("Push had failures:")
+        for f in push_fails:
+            print(f"  - {f}")
+        return EXIT_PARTIAL_PUSH
+
+    print()
+    print(f"Done. Tag '{args.name}' pushed across {len(repos)} repos.")
+    return EXIT_OK
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    repos = _discover_repos()
+    pattern = args.pattern
+    for repo in repos:
+        cmd = ["git", "tag", "--list"]
+        if pattern:
+            cmd.append(pattern)
+        res = _run(cmd, repo)
+        tags = [t for t in res.stdout.splitlines() if t]
+        print(f"{repo.name}: {', '.join(tags) if tags else '(none)'}")
+    return EXIT_OK
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_tag = sub.add_parser("tag", help="apply an annotated tag at HEAD of every MAST_* repo")
+    p_tag.add_argument("name", help="tag name, e.g. v2.0 or 2026-05-operational")
+    p_tag.add_argument("message", help="annotation message (single argument; quote it)")
+    p_tag.add_argument("--yes", action="store_true", help="skip interactive confirmations")
+    p_tag.set_defaults(func=cmd_tag)
+
+    p_push = sub.add_parser("push", help="push an already-applied tag to origin in every repo")
+    p_push.add_argument("name", help="tag name to push")
+    p_push.add_argument("--yes", action="store_true", help="skip interactive confirmation")
+    p_push.set_defaults(func=cmd_push)
+
+    p_list = sub.add_parser("list", help="list tags across all repos")
+    p_list.add_argument("pattern", nargs="?", default=None, help="optional glob pattern")
+    p_list.set_defaults(func=cmd_list)
+
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
