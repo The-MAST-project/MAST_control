@@ -47,6 +47,16 @@ EXIT_PUSH_GATE = 3
 EXIT_PARTIAL_PUSH = 4
 
 PUSH_REMOTE = "origin"
+# Order tried when determining each repo's canonical mainline. The first ref
+# that exists and resolves is used. upstream is preferred because we treat it
+# as the canonical source of truth across the ecosystem (see DECISIONS.md);
+# origin is the fallback for repos that only have a single remote.
+CANONICAL_REFS = (
+    "refs/remotes/upstream/master",
+    "refs/remotes/upstream/main",
+    "refs/remotes/origin/main",
+    "refs/remotes/origin/master",
+)
 
 
 @dataclass
@@ -76,10 +86,34 @@ def _discover_repos() -> list[Path]:
     return repos
 
 
-def _preflight(repos: list[Path], tag_name: str) -> tuple[list[RepoState], list[str]]:
+def _canonical_ref(repo: Path) -> str | None:
+    """Pick the first canonical mainline ref present in `repo`, or None."""
+    for ref in CANONICAL_REFS:
+        if _run(["git", "rev-parse", "--verify", "--quiet", ref], repo).returncode == 0:
+            return ref
+    return None
+
+
+def _fetch_all(repo: Path) -> None:
+    """Best-effort fetch from every remote so freshness checks see latest tips.
+
+    Failures (e.g. MAST_unit's known-broken `origin`) are intentionally
+    ignored: as long as *some* canonical ref resolves, the freshness check
+    has something to compare against. Real freshness gaps will still surface
+    against whichever remote did fetch successfully.
+    """
+    _run(["git", "fetch", "--all", "--quiet"], repo)
+
+
+def _preflight(
+    repos: list[Path], tag_name: str, *, check_freshness: bool
+) -> tuple[list[RepoState], list[str]]:
     states: list[RepoState] = []
     failures: list[str] = []
     for repo in repos:
+        if check_freshness:
+            _fetch_all(repo)
+
         branch_res = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo)
         head_res = _run(["git", "rev-parse", "HEAD"], repo)
         if branch_res.returncode != 0 or head_res.returncode != 0:
@@ -95,6 +129,29 @@ def _preflight(repos: list[Path], tag_name: str) -> tuple[list[RepoState], list[
         if porcelain.stdout.strip():
             failures.append(f"{repo.name}: working tree dirty")
             continue
+
+        if check_freshness:
+            canonical = _canonical_ref(repo)
+            if canonical is None:
+                failures.append(
+                    f"{repo.name}: no canonical mainline ref found (looked for upstream/origin master/main)"
+                )
+                continue
+            # Stale if the canonical tip is NOT reachable from HEAD — i.e. there
+            # are commits on canonical mainline that haven't been merged in.
+            ancestor = _run(
+                ["git", "merge-base", "--is-ancestor", canonical, "HEAD"], repo
+            )
+            if ancestor.returncode != 0:
+                canonical_short = canonical.replace("refs/remotes/", "")
+                behind = _run(
+                    ["git", "rev-list", "--count", f"HEAD..{canonical}"], repo
+                ).stdout.strip() or "?"
+                failures.append(
+                    f"{repo.name}: branch '{branch}' is stale — {behind} commit(s) behind "
+                    f"{canonical_short}. Merge it in first, or pass --allow-stale to override."
+                )
+                continue
 
         tag_at_head = False
         tag_check = _run(["git", "rev-parse", "--verify", f"refs/tags/{tag_name}"], repo)
@@ -218,7 +275,9 @@ def cmd_tag(args: argparse.Namespace) -> int:
     print(f"Discovered {len(repos)} MAST_* repos")
     print()
 
-    states, fails = _preflight(repos, args.name)
+    if not args.allow_stale:
+        print("Fetching all remotes for freshness check (use --allow-stale to skip)...")
+    states, fails = _preflight(repos, args.name, check_freshness=not args.allow_stale)
     if fails:
         print("Preflight failed:")
         for f in fails:
@@ -343,6 +402,15 @@ def main() -> int:
     p_tag.add_argument("name", help="tag name, e.g. v2.0 or 2026-05-operational")
     p_tag.add_argument("message", help="annotation message (single argument; quote it)")
     p_tag.add_argument("--yes", action="store_true", help="skip interactive confirmations")
+    p_tag.add_argument(
+        "--allow-stale",
+        action="store_true",
+        help=(
+            "skip the freshness check (default: refuse to tag if any repo's "
+            "branch is behind its canonical upstream/origin mainline). Use "
+            "only when you explicitly want to tag a stale branch."
+        ),
+    )
     p_tag.set_defaults(func=cmd_tag)
 
     p_push = sub.add_parser("push", help="push an already-applied tag to origin in every repo")
