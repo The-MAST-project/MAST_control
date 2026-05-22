@@ -28,10 +28,15 @@ CLI scripts live under `tools/`:
 
 ### Cross-repo release tagging (`tools/mast-release`)
 
-Tags are the single source of truth for a release identity in the MAST
-ecosystem. `mast-release` applies the same annotated tag at HEAD of every
-`MAST_*` repo in the workspace, runs the build report to verify everything is
-coherent, and then offers an explicit push prompt only if it is.
+**Maintainer-run tool.** Tags are the single source of truth for a release
+identity in the MAST ecosystem. `mast-release` applies the same annotated tag
+at HEAD (or `--from <branch>`) of every `MAST_*` repo in the workspace, runs
+the build report to verify everything is coherent, and then offers an explicit
+push prompt only if it is. It assumes write access to `origin` of every repo
+— in this project that means the maintainer, not contributors who hold only
+fork-push rights. Contributors open PRs; the maintainer runs `mast-release`
+after merge. See the full audience guidance in
+`MAST_common/.claude/skills/mast-release/SKILL.md`.
 
 ```bash
 # Tag every MAST_* repo locally, run the report, prompt to push to origin.
