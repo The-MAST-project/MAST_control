@@ -63,9 +63,9 @@ CANONICAL_REFS = (
 class RepoState:
     name: str
     path: Path
-    branch: str
-    head_sha: str
-    tag_at_head: bool  # True if requested tag already points at HEAD (noop)
+    target_sha: str            # commit this repo will be tagged at
+    target_descriptor: str     # human-readable description of where target came from
+    tag_at_target: bool        # True if requested tag already points at target (noop)
     error: str | None = None
 
 
@@ -94,6 +94,43 @@ def _canonical_ref(repo: Path) -> str | None:
     return None
 
 
+def _resolve_tag_target(
+    repo: Path, prefer_ref: str | None
+) -> tuple[str | None, str, str | None]:
+    """Resolve the commit this repo should be tagged at.
+
+    Returns (commit_sha, descriptor, comparison_ref). `comparison_ref` is the
+    full ref used for the freshness check — for HEAD or a working branch we
+    compare against canonical mainline; for the canonical-fallback case
+    freshness is trivially satisfied so it returns None.
+
+    With `prefer_ref` set: use that local branch's tip if it exists, otherwise
+    fall back to the canonical mainline. Without it: tag HEAD (legacy
+    behaviour, used when no --from flag is passed).
+    """
+    if prefer_ref is None:
+        # Legacy: tag current HEAD on whatever branch is checked out.
+        head_sha = _run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+        branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo).stdout.strip()
+        canonical = _canonical_ref(repo)
+        descriptor = f"HEAD ({branch})"
+        return head_sha or None, descriptor, canonical
+
+    local_ref = f"refs/heads/{prefer_ref}"
+    if _run(["git", "rev-parse", "--verify", "--quiet", local_ref], repo).returncode == 0:
+        sha = _run(["git", "rev-parse", local_ref], repo).stdout.strip()
+        canonical = _canonical_ref(repo)
+        return sha, f"branch {prefer_ref}", canonical
+
+    canonical = _canonical_ref(repo)
+    if canonical is None:
+        return None, "<no target>", None
+    sha = _run(["git", "rev-parse", canonical], repo).stdout.strip()
+    short = canonical.replace("refs/remotes/", "")
+    # Canonical-fallback target IS canonical, so freshness check is moot.
+    return sha or None, f"{short} (fallback — {prefer_ref!r} not in this repo)", None
+
+
 def _fetch_all(repo: Path) -> None:
     """Best-effort fetch from every remote so freshness checks see latest tips.
 
@@ -106,63 +143,73 @@ def _fetch_all(repo: Path) -> None:
 
 
 def _preflight(
-    repos: list[Path], tag_name: str, *, check_freshness: bool
+    repos: list[Path],
+    tag_name: str,
+    *,
+    check_freshness: bool,
+    prefer_ref: str | None,
 ) -> tuple[list[RepoState], list[str]]:
+    """Resolve each repo's tag target and validate it.
+
+    `prefer_ref` (the `--from` value, may be None) selects which commit to tag
+    in each repo: that named local branch if it exists, otherwise the repo's
+    canonical mainline tip. Without it the tagger uses HEAD (legacy behaviour).
+    """
     states: list[RepoState] = []
     failures: list[str] = []
     for repo in repos:
         if check_freshness:
             _fetch_all(repo)
 
-        branch_res = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo)
-        head_res = _run(["git", "rev-parse", "HEAD"], repo)
-        if branch_res.returncode != 0 or head_res.returncode != 0:
-            failures.append(f"{repo.name}: cannot read git state ({branch_res.stderr.strip() or head_res.stderr.strip()})")
-            continue
-        branch = branch_res.stdout.strip()
-        head_sha = head_res.stdout.strip()
-        if branch == "HEAD":
-            failures.append(f"{repo.name}: detached HEAD")
-            continue
-
+        # Dirty-tree check: still informative when tagging HEAD; less critical
+        # when tagging a non-HEAD ref but kept because uncommitted state often
+        # signals confusion. Cheap to keep, easy to clear.
         porcelain = _run(["git", "status", "--porcelain"], repo)
         if porcelain.stdout.strip():
             failures.append(f"{repo.name}: working tree dirty")
             continue
 
-        if check_freshness:
-            canonical = _canonical_ref(repo)
-            if canonical is None:
-                failures.append(
-                    f"{repo.name}: no canonical mainline ref found (looked for upstream/origin master/main)"
-                )
+        # Detached HEAD only matters when we're tagging HEAD itself.
+        if prefer_ref is None:
+            branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo).stdout.strip()
+            if branch == "HEAD":
+                failures.append(f"{repo.name}: detached HEAD (and no --from given)")
                 continue
-            # Stale if the canonical tip is NOT reachable from HEAD — i.e. there
-            # are commits on canonical mainline that haven't been merged in.
+
+        target_sha, descriptor, comparison_ref = _resolve_tag_target(repo, prefer_ref)
+        if not target_sha:
+            failures.append(
+                f"{repo.name}: cannot resolve tag target ({descriptor}) — "
+                f"neither {prefer_ref!r} nor a canonical mainline ref was found"
+            )
+            continue
+
+        if check_freshness and comparison_ref is not None:
+            # Target is stale if canonical mainline isn't an ancestor of it.
             ancestor = _run(
-                ["git", "merge-base", "--is-ancestor", canonical, "HEAD"], repo
+                ["git", "merge-base", "--is-ancestor", comparison_ref, target_sha], repo
             )
             if ancestor.returncode != 0:
-                canonical_short = canonical.replace("refs/remotes/", "")
+                canonical_short = comparison_ref.replace("refs/remotes/", "")
                 behind = _run(
-                    ["git", "rev-list", "--count", f"HEAD..{canonical}"], repo
+                    ["git", "rev-list", "--count", f"{target_sha}..{comparison_ref}"], repo
                 ).stdout.strip() or "?"
                 failures.append(
-                    f"{repo.name}: branch '{branch}' is stale — {behind} commit(s) behind "
+                    f"{repo.name}: {descriptor} is stale — {behind} commit(s) behind "
                     f"{canonical_short}. Merge it in first, or pass --allow-stale to override."
                 )
                 continue
 
-        tag_at_head = False
+        tag_at_target = False
         tag_check = _run(["git", "rev-parse", "--verify", f"refs/tags/{tag_name}"], repo)
         if tag_check.returncode == 0:
             tagged_commit = _run(["git", "rev-list", "-n", "1", f"refs/tags/{tag_name}"], repo)
-            if tagged_commit.returncode == 0 and tagged_commit.stdout.strip() == head_sha:
-                tag_at_head = True
+            if tagged_commit.returncode == 0 and tagged_commit.stdout.strip() == target_sha:
+                tag_at_target = True
             else:
                 failures.append(
                     f"{repo.name}: tag '{tag_name}' already exists at a different SHA "
-                    f"({(tagged_commit.stdout.strip() or '?')[:9]} vs HEAD {head_sha[:9]})"
+                    f"({(tagged_commit.stdout.strip() or '?')[:9]} vs target {target_sha[:9]})"
                 )
                 continue
 
@@ -170,9 +217,9 @@ def _preflight(
             RepoState(
                 name=repo.name,
                 path=repo,
-                branch=branch,
-                head_sha=head_sha,
-                tag_at_head=tag_at_head,
+                target_sha=target_sha,
+                target_descriptor=descriptor,
+                tag_at_target=tag_at_target,
             )
         )
     return states, failures
@@ -180,11 +227,11 @@ def _preflight(
 
 def _print_plan(states: list[RepoState], tag_name: str) -> None:
     print(f"Tag plan: {tag_name}")
-    print(f"{'Repo':<26} {'Branch':<22} {'HEAD':<10} Action")
-    print("-" * 70)
+    print(f"{'Repo':<26} {'Target':<48} {'SHA':<10} Action")
+    print("-" * 96)
     for s in states:
-        action = "already-tagged-noop" if s.tag_at_head else "tag"
-        print(f"{s.name:<26} {s.branch:<22} {s.head_sha[:9]:<10} {action}")
+        action = "already-tagged-noop" if s.tag_at_target else "tag"
+        print(f"{s.name:<26} {s.target_descriptor:<48} {s.target_sha[:9]:<10} {action}")
 
 
 def _confirm_by_typing(tag_name: str, prompt: str) -> bool:
@@ -202,22 +249,33 @@ def _confirm_by_typing(tag_name: str, prompt: str) -> bool:
 def _apply_tags(states: list[RepoState], tag_name: str, message: str) -> list[str]:
     failures: list[str] = []
     for s in states:
-        if s.tag_at_head:
+        if s.tag_at_target:
             print(f"  {s.name}: already at {tag_name}, skipping")
             continue
-        res = _run(["git", "tag", "-a", tag_name, "-m", message], s.path)
+        # Explicit-commit form so we tag the resolved target even when it isn't HEAD.
+        res = _run(["git", "tag", "-a", tag_name, "-m", message, s.target_sha], s.path)
         if res.returncode != 0:
             failures.append(f"{s.name}: {res.stderr.strip() or 'tag failed'}")
             print(f"  {s.name}: FAILED — {res.stderr.strip()}")
         else:
-            print(f"  {s.name}: tagged {s.head_sha[:9]}")
+            print(f"  {s.name}: tagged {s.target_sha[:9]} ({s.target_descriptor})")
     return failures
 
 
-def _evaluate_push_gate(workspace_root: Path, tag_name: str, repos: list[Path]) -> list[str]:
+def _evaluate_push_gate(
+    workspace_root: Path,
+    tag_name: str,
+    repos: list[Path],
+    expected_by_name: dict[str, str] | None = None,
+) -> list[str]:
     """Return list of human-readable reasons why the push gate did not pass.
 
-    Empty list = gate passes.
+    `expected_by_name` (optional) maps repo name to the commit SHA we expect
+    the tag to resolve to (the per-repo tag target from the resolver). When
+    omitted we fall back to checking against the report's HEAD SHA — that's
+    correct when the tag was applied to HEAD (the no-`--from` case).
+
+    Empty return list = gate passes.
     """
     reasons: list[str] = []
     report = collect_build_report(workspace_root)
@@ -233,21 +291,24 @@ def _evaluate_push_gate(workspace_root: Path, tag_name: str, repos: list[Path]) 
         if r.error:
             reasons.append(f"{r.name}: report error: {r.error}")
 
-    # Cross-check: every repo's tag must resolve to its current HEAD SHA.
-    head_by_name: dict[str, str | None] = {r.name: r.head_sha for r in report.repos}
+    fallback_by_name: dict[str, str | None] = {r.name: r.head_sha for r in report.repos}
     for repo in repos:
-        head_sha = head_by_name.get(repo.name)
-        if head_sha is None:
-            reasons.append(f"{repo.name}: no HEAD SHA in report")
+        expected = None
+        if expected_by_name is not None:
+            expected = expected_by_name.get(repo.name)
+        if expected is None:
+            expected = fallback_by_name.get(repo.name)
+        if not expected:
+            reasons.append(f"{repo.name}: no expected SHA for tag verification")
             continue
         tagged = _run(["git", "rev-parse", "--verify", f"refs/tags/{tag_name}^{{commit}}"], repo)
         if tagged.returncode != 0:
             reasons.append(f"{repo.name}: tag {tag_name} not found locally after tagging")
             continue
-        if tagged.stdout.strip() != head_sha:
+        if tagged.stdout.strip() != expected:
             reasons.append(
                 f"{repo.name}: tag {tag_name} resolves to "
-                f"{tagged.stdout.strip()[:9]} but HEAD is {head_sha[:9]}"
+                f"{tagged.stdout.strip()[:9]} but expected target was {expected[:9]}"
             )
     return reasons
 
@@ -277,7 +338,14 @@ def cmd_tag(args: argparse.Namespace) -> int:
 
     if not args.allow_stale:
         print("Fetching all remotes for freshness check (use --allow-stale to skip)...")
-    states, fails = _preflight(repos, args.name, check_freshness=not args.allow_stale)
+    if args.from_ref:
+        print(f"Tag target per repo: branch '{args.from_ref}' if present, else canonical mainline")
+    states, fails = _preflight(
+        repos,
+        args.name,
+        check_freshness=not args.allow_stale,
+        prefer_ref=args.from_ref,
+    )
     if fails:
         print("Preflight failed:")
         for f in fails:
@@ -303,7 +371,8 @@ def cmd_tag(args: argparse.Namespace) -> int:
             print(f"  - {f}")
         return EXIT_PARTIAL_TAG
 
-    reasons = _evaluate_push_gate(WORKSPACE_ROOT, args.name, repos)
+    expected_by_name = {s.name: s.target_sha for s in states}
+    reasons = _evaluate_push_gate(WORKSPACE_ROOT, args.name, repos, expected_by_name)
     if reasons:
         print("Push gate FAILED — not offering push prompt:")
         for r in reasons:
@@ -311,7 +380,7 @@ def cmd_tag(args: argparse.Namespace) -> int:
         return EXIT_PUSH_GATE
 
     print(f"Push gate passed. Tags are local-only so far on {len(repos)} repos.")
-    if not _confirm_by_typing(
+    if not args.yes and not _confirm_by_typing(
         args.name,
         f"Push tag '{args.name}' to {PUSH_REMOTE} in all {len(repos)} repos? "
         f"Type the tag name to confirm (anything else aborts):",
@@ -401,14 +470,32 @@ def main() -> int:
     p_tag = sub.add_parser("tag", help="apply an annotated tag at HEAD of every MAST_* repo")
     p_tag.add_argument("name", help="tag name, e.g. v2.0 or 2026-05-operational")
     p_tag.add_argument("message", help="annotation message (single argument; quote it)")
-    p_tag.add_argument("--yes", action="store_true", help="skip interactive confirmations")
+    p_tag.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmations (both pre-tag and pre-push)",
+    )
     p_tag.add_argument(
         "--allow-stale",
         action="store_true",
         help=(
             "skip the freshness check (default: refuse to tag if any repo's "
-            "branch is behind its canonical upstream/origin mainline). Use "
-            "only when you explicitly want to tag a stale branch."
+            "tag target is behind its canonical upstream/origin mainline). "
+            "Use only when you explicitly want to tag a stale ref."
+        ),
+    )
+    p_tag.add_argument(
+        "--from",
+        dest="from_ref",
+        default=None,
+        metavar="BRANCH",
+        help=(
+            "tag this local branch's tip in each repo when the branch exists; "
+            "otherwise fall back to that repo's canonical mainline tip "
+            "(upstream/master, upstream/main, origin/main, or origin/master). "
+            "Use when your release work lives on a shared branch like "
+            "'eli/build-report' that not every repo has. Without --from, "
+            "the tagger uses current HEAD in each repo."
         ),
     )
     p_tag.set_defaults(func=cmd_tag)
