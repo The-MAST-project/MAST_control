@@ -358,7 +358,7 @@ class Controller(Activities):
     The Controller:
     - on startup:
       - loads all the targets from files <top>/targets/submitted
-      - creates a list units: list[ApiUnit] objects, with Config.NUMBER_OF_UNITS elements (detected units)
+      - creates a list units: list[ApiUnit] objects, one per unit in the local site (site.deployed_units)
       - creates an ApiSpec object
       - creates a list of targets, sorted by merit
       - creates a web service for
