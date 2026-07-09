@@ -23,3 +23,7 @@ Any phase failure calls `Plan.abort()` which sends abort to all committed units 
 `GET /get`, `POST /execute`, `POST /postpone`, `POST /revive`, `POST /cancel`, `DELETE /delete`
 
 Utility: `python common/models/plans.py <plan-file.toml>` to parse and dump a plan as JSON.
+
+## Project-wide LLM guidance
+
+Cross-repo LLM guidance for MAST lives in the **`mast-claude-config`** repo (`github.com/The-MAST-project/mast-claude-config`) — the overarching home for project-wide instructions (shared coding standards, team working-style, global environment facts), deployed into `~/.claude/` by its `setup.sh`. Keep repo-specific guidance in this file; put genuinely cross-repo guidance there. See `mast-claude-config/CLAUDE.md` for what belongs where.
