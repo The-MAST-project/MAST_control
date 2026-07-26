@@ -31,6 +31,7 @@ from common.models.statuses import (
     SitesStatus,
     SiteStatus,
     SpecStatus,
+    BasicUnitStatus,
 )
 from common.notifications import UiUpdateNotifications
 from common.spec import GratingNames, SpecInstruments
@@ -669,10 +670,20 @@ class Controller(Activities):
                 return response.value
             else:
                 logger.error(f"{function_name()}: {response.errors}")
-                return BaseStatus(detected=False, operational=False)
+                if api_type == "UnitApi":
+                    # For units, we want to return a short status even if the API call fails
+                    return BasicUnitStatus(
+                        detected=False, powered=False, operational=False
+                    )
+                else:
+                    return BaseStatus(detected=False, operational=False)
         except Exception as e:
             logger.error(f"Error fetching {api_type} status: {e}")
-            return BaseStatus(detected=False, operational=False)
+            if api_type == "UnitApi":
+                # For units, we want to return a short status even if the API call fails
+                return BasicUnitStatus(detected=False, powered=False, operational=False)
+            else:
+                return BaseStatus(detected=False, operational=False)
 
     def status_from_dict(
         self, api: SpecApi | ControllerApi | UnitApi, data: dict
