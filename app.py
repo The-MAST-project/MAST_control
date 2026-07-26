@@ -62,11 +62,7 @@ if __name__ == "__main__":
     server_conf = cfg.get_service("control")
     assert server_conf is not None, "cannot get server_conf"
 
-    uvicorn_server = uvicorn.Server(
-        config=uvicorn.Config(
-            app=app, host=server_conf.listen_on, port=server_conf.port
-        )
-    )
+    uvicorn_server = uvicorn.Server(config=uvicorn.Config(app=app, host=server_conf.listen_on, port=server_conf.port))
     import logging
 
     from common.mast_logging import init_log
@@ -76,7 +72,5 @@ if __name__ == "__main__":
         logger,
         level=logging.DEBUG,
     )
-    logger.info(
-        f"Starting MAST control server on {server_conf.listen_on}:{server_conf.port}..."
-    )
+    logger.info(f"Starting MAST control server on {server_conf.listen_on}:{server_conf.port}...")
     uvicorn_server.run()

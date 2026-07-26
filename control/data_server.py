@@ -96,11 +96,7 @@ class DataServer:
         site = next((s for s in sites if unit_name in s.deployed_units), None)
         if not site:
             logger.warning(f"Unit '{unit_name}' not found in any configured site")
-            return CanonicalResponse(
-                errors=[
-                    f"Unit '{unit_name}' not found as deployed in any of the configured sites"
-                ]
-            )
+            return CanonicalResponse(errors=[f"Unit '{unit_name}' not found as deployed in any of the configured sites"])
         controller_host = site.controller_host
         controller_ipaddr = socket.gethostbyname(controller_host)
         proxy = ProxyContext.from_request(request)
@@ -125,15 +121,9 @@ class DataServer:
                     base="/mast-share/",
                 )
 
-                fits_files = (
-                    [f"{folder_url}/{f}" for f in fits_files] if fits_files else []
-                )
-                vcurve_files = [
-                    f"{folder_url}/{f.name}" for f in session_dir.glob("vcurve.png")
-                ] or None
-                status_files = [
-                    f"{folder_url}/{f.name}" for f in session_dir.glob("status.json")
-                ] or None
+                fits_files = [f"{folder_url}/{f}" for f in fits_files] if fits_files else []
+                vcurve_files = [f"{folder_url}/{f.name}" for f in session_dir.glob("vcurve.png")] or None
+                status_files = [f"{folder_url}/{f.name}" for f in session_dir.glob("status.json")] or None
                 if fits_files or vcurve_files or status_files:
                     result.setdefault(date_dir.name, OrderedDict())
                     result[date_dir.name][session_number] = {
@@ -163,9 +153,7 @@ class DataServer:
         all_paths = fits_paths + png_paths
 
         if not all_paths:
-            return CanonicalResponse(
-                errors=[f"No fits or vcurve files found at '{root}'"]
-            )
+            return CanonicalResponse(errors=[f"No fits or vcurve files found at '{root}'"])
 
         # Build in-memory ZIP and stream it back
         buf = io.BytesIO()
