@@ -199,13 +199,13 @@ Filters are applied as a chain; each step reduces `self.plans` and returns `Self
 ```python
 feasible = (
     PlanFilter(pending_plans)
-    .astronomical_night()          # current time between twilight limits
-    .within_time_window()          # plan.constraints.time_window contains now
+    .astronomical_night()  # current time between twilight limits
+    .within_time_window()  # plan.constraints.time_window contains now
     .airmass(max=plan.constraints.airmass.max)
-    .moon_phase(max=plan.constraints.moon.max_phase)        # percent
-    .moon_separation(min=plan.constraints.moon.min_distance) # degrees
-    .quorum_available()            # operational units ≥ plan.quorum (see 3.4)
-    .repeats_not_exhausted()       # tonight's count < quota per plan.target.repeats.every
+    .moon_phase(max=plan.constraints.moon.max_phase)  # percent
+    .moon_separation(min=plan.constraints.moon.min_distance)  # degrees
+    .quorum_available()  # operational units ≥ plan.quorum (see 3.4)
+    .repeats_not_exhausted()  # tonight's count < quota per plan.target.repeats.every
     .plans
 )
 ```

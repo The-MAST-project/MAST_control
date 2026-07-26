@@ -38,30 +38,22 @@ class Scheduler:
 
         preferred_site = self.controller.preferred_site
         if preferred_site is None:
-            logger.error(
-                f"{function_name()}: cannot determine preferred site for controller '{self.controller.hostname}'"
-            )
+            logger.error(f"{function_name()}: cannot determine preferred site for controller '{self.controller.hostname}'")
             return []
 
         site = [s for s in self.sites_conf if s.name == preferred_site][0]
         if not site:
-            logger.error(
-                f"{function_name()}: preferred site '{preferred_site}' not found in configuration"
-            )
+            logger.error(f"{function_name()}: preferred site '{preferred_site}' not found in configuration")
             return []
         nearest_observing_window: TimeWindow | None = site.observing_window()
         if not nearest_observing_window:
-            logger.error(
-                f"{function_name()}: could not determine nearest observing window for site '{preferred_site}'"
-            )
+            logger.error(f"{function_name()}: could not determine nearest observing window for site '{preferred_site}'")
             return []
 
         now = datetime.now()
         assert nearest_observing_window.start is not None
         if now > nearest_observing_window.start:
-            logger.info(
-                f"{function_name()}: it's already past dusk at site '{preferred_site}', starting batch immediately"
-            )
+            logger.info(f"{function_name()}: it's already past dusk at site '{preferred_site}', starting batch immediately")
             start_time = now
         else:
             logger.info(
@@ -116,10 +108,7 @@ class Scheduler:
 
             # TODO: handle the case where start and end are datetimes, and the plan has a specified time of day for execution
             # check plan's time window against the given time window
-            if (
-                plan_time_window.start >= evaluated_time_window.start
-                and plan_time_window.start < evaluated_time_window.end
-            ):
+            if plan_time_window.start >= evaluated_time_window.start and plan_time_window.start < evaluated_time_window.end:
                 ret.append(plan)
 
         return self
@@ -143,9 +132,7 @@ class Scheduler:
         for plan in [p for p in self.plans if p.target is not None]:
             target = plan.target
             if target.ra_hours is None or target.dec_degrees is None:
-                logger.warning(
-                    f"{function_name()}: Plan {plan.ulid}: bad target ({plan.target}), skipping visibility check"
-                )
+                logger.warning(f"{function_name()}: Plan {plan.ulid}: bad target ({plan.target}), skipping visibility check")
                 continue
 
             ret.append(plan)

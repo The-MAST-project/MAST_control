@@ -15,7 +15,5 @@ class SafetyMonitor:
     # def is_safe(self) -> bool:
     #     with httpx.Client() as client:
 
-
     def why_not_safe(self) -> List[str]:
         pass
-
