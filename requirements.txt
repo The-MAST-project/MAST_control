@@ -1,0 +1,70 @@
+# MAST_control runtime dependencies.
+#
+# Pinned from the live environment: mast-ns-control (this machine), MAST_control/.venv.
+#
+# UTF-8, no BOM. When editing from PowerShell pass -Encoding utf8 to
+# Out-File / Set-Content (see MAST_unit DECISIONS.md [2026-05-14]).
+#
+# Removed as obsolete on PyPI: bs4, fits.
+#
+# Declared here but NOT installed in the live venv, so left unpinned
+# -- verify whether these are still needed:
+#   beautifulsoup4, colorama, email_validator, fastapi-cli, gitdb, GitPython, httptools, pip, python-multipart, pythonping, rfc3986, smmap, ujson, watchfiles
+#
+
+annotated-types==0.7.0
+anyio==4.7.0
+astropy==7.0.0
+astropy-iers-data==0.2024.12.23.0.33.24
+beautifulsoup4
+certifi==2025.1.31
+charset-normalizer==3.4.5
+click==8.3.1
+colorama
+dnspython==2.7.0
+email_validator
+fastapi==0.115.6
+fastapi-cli
+gitdb
+GitPython
+h11==0.14.0
+httpcore==1.0.7
+httptools
+httpx==0.27.2
+idna==3.10
+Jinja2==3.1.6
+markdown-it-py==3.0.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+numpy==2.2.1
+orjson==3.10.15
+packaging==24.2
+pip
+pydantic==2.10.4
+pydantic_core==2.27.2
+pyerfa==2.0.1.5
+Pygments==2.19.1
+pymongo==4.11
+python-dotenv==1.2.2
+python-multipart
+pythonping
+PyYAML==6.0.2
+requests==2.32.5
+rfc3986
+rich==14.0.0
+shellingham==1.5.4
+smmap
+sniffio==1.3.1
+starlette==0.41.3
+tomlkit==0.13.2
+typer==0.24.1
+typing_extensions==4.12.2
+ujson
+urllib3==2.6.3
+uvicorn==0.34.0
+watchdog==6.0.0
+watchfiles
+websockets==15.0.1
+python-ulid==3.1.0
+python-ulid==3.1.0
+astroplan==0.10.1
