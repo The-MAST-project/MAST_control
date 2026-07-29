@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import ORJSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 
 from common.config import Config
 from control.controller import Controller
@@ -25,7 +25,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    default_response_class=ORJSONResponse,
     title="MAST_control",
     lifespan=lifespan,
 )
