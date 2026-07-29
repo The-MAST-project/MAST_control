@@ -1,9 +1,8 @@
-import logging
 from datetime import datetime
 from typing import Self, cast
 
 from common.config import Config
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.batches import Batch
 from common.models.constraints import TimeWindow
 from common.utils import function_name
@@ -11,10 +10,7 @@ from common.utils import function_name
 from .controller import Controller
 from .planning import Plan, Planner, PlanState
 
-logger = logging.getLogger("scheduling")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class Scheduler:
     _instance = None
     _initialized = False

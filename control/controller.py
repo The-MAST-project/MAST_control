@@ -1,6 +1,5 @@
 import asyncio
 import atexit
-import logging
 import os
 import signal
 import socket
@@ -22,7 +21,7 @@ from common.const import Const
 from common.dlipowerswitch import (
     DliPowerSwitch,
 )
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification
 from common.models.batches import Batch
 from common.models.statuses import (
@@ -42,9 +41,7 @@ from common.utils import (
 )
 from control.planning import Plan, Planner
 
-logger = logging.getLogger("controller")
-init_log(logger)
-
+logger = get_logger(__name__)
 # _units_status_cache = TTLCache(maxsize=20, ttl=30)
 
 

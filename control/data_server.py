@@ -1,5 +1,4 @@
 import io
-import logging
 import re
 import socket
 import zipfile
@@ -13,13 +12,10 @@ from fastapi.responses import StreamingResponse
 from common.canonical import CanonicalResponse
 from common.config import Config
 from common.const import Const
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.proxy import ProxyContext
 
-logger = logging.getLogger("mast.control.data_server")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 class DataServer:
     """
     Singleton service for serving data under /Storage/mast-share.
