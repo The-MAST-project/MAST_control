@@ -1,3 +1,4 @@
+import argparse
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -8,6 +9,14 @@ from fastapi.responses import RedirectResponse
 from common.config import Config
 from control.controller import Controller
 from control.data_server import DataServer
+
+# Logging is configured once, here, before anything logs. Every 'mast.*' logger
+# inherits the handlers and level from root by propagation.
+# Precedence: --log-level > MAST_LOG_LEVEL > default.
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ... (overrides MAST_LOG_LEVEL)")
+configure_logging(_parser.parse_known_args()[0].log_level)
+
 
 
 @asynccontextmanager
@@ -64,12 +73,8 @@ if __name__ == "__main__":
     uvicorn_server = uvicorn.Server(config=uvicorn.Config(app=app, host=server_conf.listen_on, port=server_conf.port))
     import logging
 
-    from common.mast_logging import init_log
+    from common.mast_logging import configure_logging, get_logger
 
-    logger = logging.Logger("uvicorn")
-    init_log(
-        logger,
-        level=logging.DEBUG,
-    )
+    logger = get_logger(__name__)
     logger.info(f"Starting MAST control server on {server_conf.listen_on}:{server_conf.port}...")
     uvicorn_server.run()

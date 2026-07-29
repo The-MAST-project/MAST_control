@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import shutil
 from enum import StrEnum
 from pathlib import Path
@@ -13,7 +12,7 @@ from pydantic import BaseModel, Field
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.constraints import ConstraintsModel, RepeatsModel
 from common.models.events import EventModel
 from common.models.plan_scraping import ScrapingResults
@@ -22,10 +21,7 @@ from common.models.spectrographs import SpectrographModel
 from common.paths import PathMaker
 from common.utils import function_name
 
-logger = logging.getLogger("planning")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 def _import_plan_find():
     """Import mast-plan-find tool (hyphenated name and no .py extension require importlib)."""
     import importlib.machinery
