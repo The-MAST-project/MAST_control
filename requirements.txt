@@ -12,6 +12,13 @@
 # UTF-8, no BOM. When editing from PowerShell pass -Encoding utf8 to
 # Out-File / Set-Content (see MAST_unit DECISIONS.md [2026-05-14]).
 #
+# Removed deliberately:
+#   pip          - a `pip freeze` artifact, not a dependency. mast-clone builds
+#                  the venv with `uv venv` + `uv pip install`, so pinning pip
+#                  here only risks uv resolving a bootstrap tool against the
+#                  application's constraints.
+#   python-ulid  - was listed twice (identical ==4.0.1 pins); kept once.
+#
 
 annotated-types==0.8.0
 anyio==4.14.2
@@ -39,7 +46,6 @@ MarkupSafe==3.0.3
 mdurl==0.1.2
 numpy==2.5.1
 packaging==26.2
-pip==26.1.2
 pydantic==2.13.4
 pydantic_core==2.46.4
 pyerfa==2.0.1.5
@@ -65,6 +71,5 @@ uvicorn==0.51.0
 watchdog==6.0.0
 watchfiles==1.2.0
 websockets==16.1.1
-python-ulid==4.0.1
 python-ulid==4.0.1
 astroplan==0.10.1
