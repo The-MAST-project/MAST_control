@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import shutil
 from enum import StrEnum
 from pathlib import Path
@@ -13,7 +12,7 @@ from pydantic import BaseModel, Field
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
 from common.const import Const
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.constraints import ConstraintsModel, RepeatsModel
 from common.models.events import EventModel
 from common.models.plan_scraping import ScrapingResults
@@ -22,10 +21,7 @@ from common.models.spectrographs import SpectrographModel
 from common.paths import PathMaker
 from common.utils import function_name
 
-logger = logging.getLogger("planning")
-init_log(logger)
-
-
+logger = get_logger(__name__)
 def _import_plan_find():
     """Import mast-plan-find tool (hyphenated name and no .py extension require importlib)."""
     import importlib.machinery
@@ -152,9 +148,7 @@ class NewPlanTemplate(BaseModel):
             "repeats": RepeatsModel().model_dump(),
         }
     )
-    spec_assignment: dict = Field(
-        default_factory=lambda: SpectrographModel().model_dump()
-    )
+    spec_assignment: dict = Field(default_factory=lambda: SpectrographModel().model_dump())
     constraints: dict = Field(default_factory=lambda: ConstraintsModel().model_dump())
     filter_options: list[str] = []
 
@@ -255,9 +249,7 @@ class Planner:
     def transition_to_completed(self, plan_ids: list[str]) -> CanonicalResponse:
         return self.transition_plans(plan_ids, PlanState.completed)
 
-    def transition_plans(
-        self, plan_ids: list[str], target_state: PlanState
-    ) -> CanonicalResponse:
+    def transition_plans(self, plan_ids: list[str], target_state: PlanState) -> CanonicalResponse:
         errors = []
         for plan_id in plan_ids:
             result = self.locate_plan(plan_id)
@@ -287,9 +279,7 @@ class Planner:
             for folder in self.plan_folders:
                 folder.refresh()
 
-    def get_plans(
-        self, ulid: str | None = None, state: PlanState | None = None
-    ) -> CanonicalResponse:
+    def get_plans(self, ulid: str | None = None, state: PlanState | None = None) -> CanonicalResponse:
         """
         Get either specific (by ulid or stage) plan(s), or all of them
 
@@ -344,9 +334,7 @@ class Planner:
                 )
             )
         except Exception as e:
-            return CanonicalResponse(
-                errors=[f"{function_name()}: error getting plans: {e}"]
-            )
+            return CanonicalResponse(errors=[f"{function_name()}: error getting plans: {e}"])
 
     def locate_plan(self, ulid: str) -> tuple[PlanState, Plan] | None:
         with self.lock:
@@ -360,45 +348,35 @@ class Planner:
         assert plan is not None and plan.full_path is not None
         new_path = self.canceled_folder.folder_path / plan.full_path.name
 
-        logger.debug(
-            f"canceling plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
-        )
+        logger.debug(f"canceling plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
         shutil.move(str(plan.full_path), str(new_path))
 
     def do_postpone_plan(self, plan: Plan):
         assert plan is not None and plan.full_path is not None
         new_path = self.postponed_folder.folder_path / plan.full_path.name
 
-        logger.debug(
-            f"postponing plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
-        )
+        logger.debug(f"postponing plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
         shutil.move(str(plan.full_path), str(new_path))
 
     def do_revive_plan(self, plan: Plan):
         assert plan is not None and plan.full_path is not None
         new_path = self.pending_folder.folder_path / plan.full_path.name
 
-        logger.debug(
-            f"reviving plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
-        )
+        logger.debug(f"reviving plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
         shutil.move(str(plan.full_path), str(new_path))
 
     def do_delete_plan(self, plan: Plan):
         assert plan is not None and plan.full_path is not None
         new_path = self.deleted_folder.folder_path / plan.full_path.name
 
-        logger.debug(
-            f"deleting plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
-        )
+        logger.debug(f"deleting plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
         shutil.move(str(plan.full_path), str(new_path))
 
     def do_execute_plan(self, plan: Plan) -> CanonicalResponse:
         assert plan is not None and plan.full_path is not None
         new_path = self.in_progress_folder.folder_path / plan.full_path.name
 
-        logger.debug(
-            f"executing plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}"
-        )
+        logger.debug(f"executing plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
         shutil.move(str(plan.full_path), str(new_path))
 
         asyncio.create_task(self.controller.execute(plan))
@@ -418,9 +396,7 @@ class Planner:
     def submit_plan(self, plan: Plan) -> CanonicalResponse:
         try:
             if plan.spec_assignment is None or plan.spec_assignment.instrument is None:
-                return CanonicalResponse(
-                    errors=["submit_plan: spec_assignment.instrument must be specified"]
-                )
+                return CanonicalResponse(errors=["submit_plan: spec_assignment.instrument must be specified"])
             if plan.ulid is None:
                 return CanonicalResponse(errors=["submit_plan: plan must have a ulid"])
 
@@ -431,9 +407,7 @@ class Planner:
                 exclude={"full_path", "spec_api", "committed_unit_apis"},
                 exclude_none=True,
             )
-            submitted_event = EventModel(what="submitted").model_dump(
-                mode="json", exclude_none=True
-            )
+            submitted_event = EventModel(what="submitted").model_dump(mode="json", exclude_none=True)
             plan_dict["events"] = [submitted_event]
 
             with open(file_path, "w") as f:
@@ -469,12 +443,8 @@ class Planner:
 
         tag = "Plans"
         plans_base = Const.BASE_CONTROL_PATH + "/plans"
-        router.add_api_route(
-            plans_base + "/get", tags=[tag], endpoint=self.get_plans, methods=["GET"]
-        )
-        router.add_api_route(
-            plans_base + "/new", tags=[tag], endpoint=self.get_new_plan, methods=["GET"]
-        )
+        router.add_api_route(plans_base + "/get", tags=[tag], endpoint=self.get_plans, methods=["GET"])
+        router.add_api_route(plans_base + "/new", tags=[tag], endpoint=self.get_new_plan, methods=["GET"])
         router.add_api_route(
             plans_base + "/submit",
             tags=[tag],

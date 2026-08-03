@@ -8,14 +8,16 @@
   "ruff.enable": true,
   "ruff.organizeImports": true,
   "ruff.fixAll": true,
-  // Formatting
+  // Formatting (fleet standard: ruff formatter; only reformat CHANGED lines on
+  // save, so diffs stay small — see ruff.toml for the rules).
   "editor.formatOnSave": true,
+  "editor.formatOnSaveMode": "modifications",
   "editor.formatOnPaste": true,
   "editor.formatOnType": true,
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
-    "editor.rulers": [88],
+    "editor.rulers": [125],
     "editor.codeActionsOnSave": {
       "source.fixAll": "explicit",
       "source.organizeImports": "explicit"

@@ -1,6 +1,5 @@
 import asyncio
 import atexit
-import logging
 import os
 import signal
 import socket
@@ -22,7 +21,7 @@ from common.const import Const
 from common.dlipowerswitch import (
     DliPowerSwitch,
 )
-from common.mast_logging import init_log
+from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification
 from common.models.batches import Batch
 from common.models.statuses import (
@@ -31,6 +30,7 @@ from common.models.statuses import (
     SitesStatus,
     SiteStatus,
     SpecStatus,
+    BasicUnitStatus,
 )
 from common.notifications import UiUpdateNotifications
 from common.spec import GratingNames, SpecInstruments
@@ -41,9 +41,7 @@ from common.utils import (
 )
 from control.planning import Plan, Planner
 
-logger = logging.getLogger("controller")
-init_log(logger)
-
+logger = get_logger(__name__)
 # _units_status_cache = TTLCache(maxsize=20, ttl=30)
 
 
@@ -308,9 +306,7 @@ init_log(logger)
 
 class ControllerConfig(BaseModel):
     managed_sites: list[Site] = []
-    managed_units: dict[
-        str, dict[str, UnitConfig | None]
-    ] = {}  # site_name -> unit_name -> UnitConfig | None
+    managed_units: dict[str, dict[str, UnitConfig | None]] = {}  # site_name -> unit_name -> UnitConfig | None
 
 
 class CachedValue:
@@ -425,9 +421,7 @@ class Controller(Activities):
             self.config.managed_units[site.name] = {}
             for unit_name in site.deployed_units:
                 if unit_name not in site.units_in_maintenance:
-                    self.config.managed_units[site.name][unit_name] = Config().get_unit(
-                        site.name, unit_name
-                    )
+                    self.config.managed_units[site.name][unit_name] = Config().get_unit(site.name, unit_name)
 
         self._shutdown_event: Event = Event()
         self.lock: Lock = Lock()
@@ -435,9 +429,7 @@ class Controller(Activities):
 
         # Build cache hierarchy: site_name -> {"units": {unit_name: CachedValue}, "spec": CachedValue}
         self.status_cache: dict[str, dict[str, Any]] = {}
-        self.power_switches: dict[
-            str, dict[str, DliPowerSwitch]
-        ] = {}  # power_switches[site_name][unit_name]
+        self.power_switches: dict[str, dict[str, DliPowerSwitch]] = {}  # power_switches[site_name][unit_name]
 
         for site in self.config.managed_sites:
             self.status_cache[site.name] = {
@@ -466,9 +458,7 @@ class Controller(Activities):
                         ps_ipaddr = socket.gethostbyname(ps_hostname)
                     except socket.gaierror:
                         ps_ipaddr = None
-                        logger.warning(
-                            f"{function_name()}: cannot resolve power switch hostname '{ps_hostname}'"
-                        )
+                        logger.warning(f"{function_name()}: cannot resolve power switch hostname '{ps_hostname}'")
 
                     assert site.name in self.config.managed_units
                     assert unit_name in self.config.managed_units[site.name]
@@ -489,10 +479,7 @@ class Controller(Activities):
                     # have we already seen this controller machine?
                     if "spec" in self.status_cache[existing_site]:
                         cached_value = self.status_cache[existing_site]
-                        if (
-                            cached_value["spec"] is not None
-                            and cached_value["spec"].machine_name == site.spec_host
-                        ):
+                        if cached_value["spec"] is not None and cached_value["spec"].machine_name == site.spec_host:
                             self.status_cache[site.name]["spec"] = cached_value["spec"]
                             break
                 else:
@@ -512,12 +499,9 @@ class Controller(Activities):
                         cached_value = self.status_cache[existing_site]
                         if (
                             cached_value["controller"] is not None
-                            and cached_value["controller"].machine_name
-                            == site.controller_host
+                            and cached_value["controller"].machine_name == site.controller_host
                         ):
-                            self.status_cache[site.name]["controller"] = cached_value[
-                                "controller"
-                            ]
+                            self.status_cache[site.name]["controller"] = cached_value["controller"]
                             break
                 else:
                     # nope, make a new entry
@@ -532,9 +516,7 @@ class Controller(Activities):
         self.config_timer.start()
 
         self.fetch_timer: RepeatTimer = RepeatTimer(2, self.on_fetch_timer)
-        self.fetch_timer.daemon = (
-            False  # Don't make it a daemon so we can clean up properly
-        )
+        self.fetch_timer.daemon = False  # Don't make it a daemon so we can clean up properly
 
         self.refresh()
         self.fetch_timer.start()
@@ -554,16 +536,12 @@ class Controller(Activities):
         if site_name is None:
             site_name = self.preferred_site
         if site_name is None:
-            logger.error(
-                f"{function_name()}: site_name is None and preferred_site is not set"
-            )
+            logger.error(f"{function_name()}: site_name is None and preferred_site is not set")
             return []
 
         site_cache = self.status_cache.get(site_name)
         if site_cache is None:
-            logger.error(
-                f"{function_name()}: site '{site_name}' not found in status cache"
-            )
+            logger.error(f"{function_name()}: site '{site_name}' not found in status cache")
             return []
 
         return [
@@ -618,9 +596,7 @@ class Controller(Activities):
                     cached_value.fetcher = future
 
                     future.add_done_callback(
-                        lambda f, sn=site_name, cn=unit_name, cv=cached_value: (
-                            self._on_fetch_complete(f, sn, cn, cv)
-                        )
+                        lambda f, sn=site_name, cn=unit_name, cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
                     )
 
             # Check spec
@@ -631,9 +607,7 @@ class Controller(Activities):
                     cached_value.fetcher = future
 
                     future.add_done_callback(
-                        lambda f, sn=site_name, cn="spec", cv=cached_value: (
-                            self._on_fetch_complete(f, sn, cn, cv)
-                        )
+                        lambda f, sn=site_name, cn="spec", cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
                     )
 
             # Check controller
@@ -644,39 +618,37 @@ class Controller(Activities):
                     cached_value.fetcher = future
 
                     future.add_done_callback(
-                        lambda f, sn=site_name, cn="controller", cv=cached_value: (
-                            self._on_fetch_complete(f, sn, cn, cv)
-                        )
+                        lambda f, sn=site_name, cn="controller", cv=cached_value: self._on_fetch_complete(f, sn, cn, cv)
                     )
 
     def _fetch_status(self, cached_value: CachedValue) -> Any:
         """Generic fetch for any component type - detects type from cached_value.api"""
-        api_type = type(
-            cached_value.api
-        ).__name__  # "UnitApi", "SpecApi", "ControllerApi"
+        api_type = type(cached_value.api).__name__  # "UnitApi", "SpecApi", "ControllerApi"
 
         try:
             cached_value.last_attempt = datetime.now(timezone.utc)
             response = asyncio.run(
-                cached_value.api.get(
-                    "controller_status"
-                    if isinstance(cached_value.api, ControllerApi)
-                    else "status"
-                )
+                cached_value.api.get("controller_status" if isinstance(cached_value.api, ControllerApi) else "status")
             )
 
             if response.succeeded:
                 return response.value
             else:
                 logger.error(f"{function_name()}: {response.errors}")
-                return BaseStatus(detected=False, operational=False)
+                if api_type == "UnitApi":
+                    # For units, we want to return a short status even if the API call fails
+                    return BasicUnitStatus(detected=False, powered=False, operational=False)
+                else:
+                    return BaseStatus(detected=False, operational=False)
         except Exception as e:
             logger.error(f"Error fetching {api_type} status: {e}")
-            return BaseStatus(detected=False, operational=False)
+            if api_type == "UnitApi":
+                # For units, we want to return a short status even if the API call fails
+                return BasicUnitStatus(detected=False, powered=False, operational=False)
+            else:
+                return BaseStatus(detected=False, operational=False)
 
-    def status_from_dict(
-        self, api: SpecApi | ControllerApi | UnitApi, data: dict
-    ) -> Any:
+    def status_from_dict(self, api: SpecApi | ControllerApi | UnitApi, data: dict) -> Any:
         from common.models.statuses import (
             BaseStatus,
             ControllerStatus,
@@ -702,9 +674,7 @@ class Controller(Activities):
             try:
                 validated_status = BaseStatus.model_validate(data)
             except Exception as e2:
-                logger.error(
-                    f"Failed to validate status data for {type(api).__name__}: {e}; also failed BaseStatus: {e2}"
-                )
+                logger.error(f"Failed to validate status data for {type(api).__name__}: {e}; also failed BaseStatus: {e2}")
                 return BaseStatus(detected=False, operational=False)
 
         return validated_status
@@ -749,10 +719,7 @@ class Controller(Activities):
                     if cached_value.value:
                         unit_statuses[unit_name] = cached_value.value
                         unit_statuses[unit_name].powered = (
-                            self.power_switches[site_name][unit_name].get_outlet_state(
-                                "Computer"
-                            )
-                            or False
+                            self.power_switches[site_name][unit_name].get_outlet_state("Computer") or False
                         )
 
                 spec_status = (
@@ -813,25 +780,14 @@ class Controller(Activities):
         if site_name not in self.status_cache:
             return CanonicalResponse(errors=[f"no statuses for '{site_name=}'"])
         if unit_name not in self.status_cache[site_name]["units"]:
-            return CanonicalResponse(
-                errors=[f"no status for '{unit_name=}' of '{site_name=}'"]
-            )
+            return CanonicalResponse(errors=[f"no status for '{unit_name=}' of '{site_name=}'"])
 
         with self.lock:
-            return CanonicalResponse(
-                value=self.status_cache[site_name]["units"][unit_name].value
-            )
+            return CanonicalResponse(value=self.status_cache[site_name]["units"][unit_name].value)
 
-    def endpoint_power_switch_status(
-        self, site_name: str, unit_name: str
-    ) -> CanonicalResponse:
-        if (
-            site_name not in self.power_switches
-            or unit_name not in self.power_switches[site_name]
-        ):
-            return CanonicalResponse(
-                errors=[f"no power_switch for {site_name=}, {unit_name=}"]
-            )
+    def endpoint_power_switch_status(self, site_name: str, unit_name: str) -> CanonicalResponse:
+        if site_name not in self.power_switches or unit_name not in self.power_switches[site_name]:
+            return CanonicalResponse(errors=[f"no power_switch for {site_name=}, {unit_name=}"])
         power_switch = self.power_switches[site_name][unit_name]
 
         try:
@@ -840,16 +796,9 @@ class Controller(Activities):
             return CanonicalResponse(errors=[f"exception: {ex}"])
         return CanonicalResponse(value=status)
 
-    def endpoint_get_outlet(
-        self, site_name: str, unit_name: str, outlet_name
-    ) -> CanonicalResponse:
-        if (
-            site_name not in self.power_switches
-            or unit_name not in self.power_switches[site_name]
-        ):
-            return CanonicalResponse(
-                errors=[f"no power_switch for {site_name=}, {unit_name=}"]
-            )
+    def endpoint_get_outlet(self, site_name: str, unit_name: str, outlet_name) -> CanonicalResponse:
+        if site_name not in self.power_switches or unit_name not in self.power_switches[site_name]:
+            return CanonicalResponse(errors=[f"no power_switch for {site_name=}, {unit_name=}"])
         power_switch = self.power_switches[site_name][unit_name]
 
         try:
@@ -865,13 +814,8 @@ class Controller(Activities):
         outlet_name: str,
         state: Literal["on", "off", "toggle"],
     ) -> CanonicalResponse:
-        if (
-            site_name not in self.power_switches
-            or unit_name not in self.power_switches[site_name]
-        ):
-            return CanonicalResponse(
-                errors=[f"no power_switch for {site_name=}, {unit_name=}"]
-            )
+        if site_name not in self.power_switches or unit_name not in self.power_switches[site_name]:
+            return CanonicalResponse(errors=[f"no power_switch for {site_name=}, {unit_name=}"])
         power_switch = self.power_switches[site_name][unit_name]
 
         if state == "on":
@@ -889,11 +833,7 @@ class Controller(Activities):
         Executes a plan or batch. This is called by the Planner when a plan or batch is ready to be executed.
         """
         if self.in_progress is not None:
-            return CanonicalResponse(
-                errors=[
-                    f"another plan/batch is already in progress: '{self.in_progress.ulid}'"
-                ]
-            )
+            return CanonicalResponse(errors=[f"another plan/batch is already in progress: '{self.in_progress.ulid}'"])
 
         self.in_progress = work
         try:
@@ -915,9 +855,7 @@ class Controller(Activities):
         - 'assignment_notification': update run folder symlinks + relay to Django
         """
         op = function_name()
-        logger.info(
-            f"{op}: type={data.type} from {(data.initiator and data.initiator.hostname) or 'unknown initiator'}"
-        )
+        logger.info(f"{op}: type={data.type} from {(data.initiator and data.initiator.hostname) or 'unknown initiator'}")
 
         if isinstance(data, AssignmentNotification):
             await self._handle_assignment_notification(data)
@@ -925,9 +863,7 @@ class Controller(Activities):
         await self._relay_to_django(data)
         return CanonicalResponse_Ok
 
-    async def _handle_assignment_notification(
-        self, notification: AssignmentNotification
-    ):
+    async def _handle_assignment_notification(self, notification: AssignmentNotification):
         op = function_name()
         if self.in_progress is None:
             logger.error(f"{op}: no in_progress assignment")
@@ -946,11 +882,7 @@ class Controller(Activities):
         assert notification.initiator is not None
         assert notification.initiator.hostname is not None
         src = notification.shared_top
-        dst = (
-            Path(self.in_progress.run_folder)
-            / notification.initiator.hostname
-            / notification.shared_subpath
-        )
+        dst = Path(self.in_progress.run_folder) / notification.initiator.hostname / notification.shared_subpath
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(src, dst)
@@ -960,9 +892,7 @@ class Controller(Activities):
 
     async def _relay_to_django(self, data):
         op = function_name()
-        django_url = (
-            f"http://{Const.DJANGO_HOST}:{Const.DJANGO_PORT}/api/notifications/"
-        )
+        django_url = f"http://{Const.DJANGO_HOST}:{Const.DJANGO_PORT}/api/notifications/"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
@@ -971,9 +901,7 @@ class Controller(Activities):
                     headers={"Content-Type": "application/json"},
                 )
                 if response.status_code != 200:
-                    logger.warning(
-                        f"{op}: Django returned {response.status_code}: {response.text}"
-                    )
+                    logger.warning(f"{op}: Django returned {response.status_code}: {response.text}")
         except httpx.RequestError as e:
             logger.error(f"{op}: failed to reach Django: {e}")
         except Exception as e:
@@ -985,9 +913,7 @@ class Controller(Activities):
     def endpoint_config_get_user(self, user_name: str):
         return Config().get_user(user_name)
 
-    def endpoint_config_get_unit(
-        self, site_name: str, unit_name: str
-    ) -> CanonicalResponse:
+    def endpoint_config_get_unit(self, site_name: str, unit_name: str) -> CanonicalResponse:
         unit_config = Config().get_unit(site_name, unit_name)
         # logger.debug(f"{function_name}: {unit_name=}, {unit_config=}")
         return (
@@ -999,25 +925,19 @@ class Controller(Activities):
     def endpoint_config_sites(self) -> CanonicalResponse:
         return CanonicalResponse(value=Config().get_sites())
 
-    def endpoint_config_set_unit(
-        self, site_name: str, unit_name: str, unit_conf: UnitConfig
-    ) -> CanonicalResponse:
+    def endpoint_config_set_unit(self, site_name: str, unit_name: str, unit_conf: UnitConfig) -> CanonicalResponse:
         Config().set_unit(site_name, unit_name, unit_conf)
         return CanonicalResponse_Ok
 
     def endpoint_config_get_thar_filters(self) -> CanonicalResponse:
         return CanonicalResponse(value=Config().get_thar_filters())
 
-    async def endpoint_simulate_move_fiber(
-        self, instrument: SpecInstruments
-    ) -> CanonicalResponse:
+    async def endpoint_simulate_move_fiber(self, instrument: SpecInstruments) -> CanonicalResponse:
         spec_api = SpecApi(site_name=self.preferred_site)
         await spec_api.put(method=f"/simulate/fiber_stage/{instrument}")
         return CanonicalResponse_Ok
 
-    async def endpoint_simulate_lightpath(
-        self, instrument: SpecInstruments, onoff: bool
-    ) -> CanonicalResponse:
+    async def endpoint_simulate_lightpath(self, instrument: SpecInstruments, onoff: bool) -> CanonicalResponse:
         spec_api = SpecApi(site_name=self.preferred_site)
         await spec_api.put(
             method="/simulate/lightpath",
@@ -1025,9 +945,7 @@ class Controller(Activities):
         )
         return CanonicalResponse_Ok
 
-    async def endpoint_simulate_disperser(
-        self, grating: GratingNames
-    ) -> CanonicalResponse:
+    async def endpoint_simulate_disperser(self, grating: GratingNames) -> CanonicalResponse:
         spec_api = SpecApi(site_name=self.preferred_site)
         await spec_api.put(method=f"/simulate/disperser_stage/{grating}")
         return CanonicalResponse_Ok
@@ -1069,9 +987,7 @@ class Controller(Activities):
         tag = "Control"
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
-        router.add_api_route(
-            base_path + "/shutdown", tags=[tag], endpoint=self.shutdown
-        )
+        router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
 
         tag = "Config"
         router.add_api_route(
@@ -1126,14 +1042,12 @@ class Controller(Activities):
             endpoint=self.endpoint_power_switch_status,
         )
         router.add_api_route(
-            base_path
-            + "/unit/{site_name}/{unit_name}/power_switch/get_outlet/{outlet_name}",
+            base_path + "/unit/{site_name}/{unit_name}/power_switch/get_outlet/{outlet_name}",
             tags=[tag],
             endpoint=self.endpoint_get_outlet,
         )
         router.add_api_route(
-            base_path
-            + "/unit/{site_name}/{unit_name}/power_switch/set_outlet/{outlet_name}/{state}",
+            base_path + "/unit/{site_name}/{unit_name}/power_switch/set_outlet/{outlet_name}/{state}",
             tags=[tag],
             endpoint=self.endpoint_set_outlet,
             methods=["PUT", "POST"],

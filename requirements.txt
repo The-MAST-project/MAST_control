@@ -1,0 +1,75 @@
+# MAST_control runtime dependencies.
+#
+# Pinned to the versions currently available on PyPI, resolved for
+# MAST_control and MAST_gui TOGETHER. Both run on mast-ns-control and
+# share one venv (<top>/.venv), so any package they both declare must
+# carry the same version -- resolving them jointly is what guarantees it.
+# Previously the two files were pinned from their own venvs, built 11
+# months apart, and disagreed on astropy, httpx, pydantic, pymongo and
+# rich; provisioning the compound 'control' role now fails loudly on any
+# such contradiction rather than letting the last file win.
+#
+# UTF-8, no BOM. When editing from PowerShell pass -Encoding utf8 to
+# Out-File / Set-Content (see MAST_unit DECISIONS.md [2026-05-14]).
+#
+# Removed deliberately:
+#   pip          - a `pip freeze` artifact, not a dependency. mast-clone builds
+#                  the venv with `uv venv` + `uv pip install`, so pinning pip
+#                  here only risks uv resolving a bootstrap tool against the
+#                  application's constraints.
+#   python-ulid  - was listed twice (identical ==4.0.1 pins); kept once.
+#
+
+annotated-types==0.8.0
+anyio==4.14.2
+astropy==8.0.1
+astropy-iers-data==0.2026.7.27.0.56.29
+beautifulsoup4==4.15.0
+certifi==2026.7.22
+charset-normalizer==3.4.9
+click==8.4.2
+colorama==0.4.6
+dnspython==2.8.0
+email_validator==2.3.0
+fastapi==0.140.9
+fastapi-cli==0.0.32
+gitdb==4.0.12
+GitPython==3.1.57
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+Jinja2==3.1.6
+markdown-it-py==4.2.0
+MarkupSafe==3.0.3
+mdurl==0.1.2
+numpy==2.5.1
+packaging==26.2
+pydantic==2.13.4
+pydantic_core==2.46.4
+pyerfa==2.0.1.5
+Pygments==2.20.0
+pymongo==4.17.0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+pythonping==1.1.4
+PyYAML==6.0.3
+requests==2.34.2
+rfc3986==2.0.0
+rich==15.0.0
+shellingham==1.5.4
+smmap==5.0.3
+sniffio==1.3.1
+starlette==1.3.1
+tomlkit==0.15.1
+typer==0.27.0
+typing_extensions==4.16.0
+ujson==5.13.0
+urllib3==2.7.0
+uvicorn==0.51.0
+watchdog==6.0.0
+watchfiles==1.2.0
+websockets==16.1.1
+python-ulid==4.0.1
+astroplan==0.10.1
