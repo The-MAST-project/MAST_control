@@ -5,7 +5,8 @@
 ## Running
 
 ```bash
-MAST_PROJECT=control python app.py
+python app.py   # role + identity come from the bootstrap config file
+                # (/etc/wis/config.toml; set MAST_CONFIG to override for dev)
 ```
 
 ## Plan Execution (`control/planning.py`)
