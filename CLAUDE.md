@@ -1,6 +1,8 @@
-@common/CLAUDE.md
+@../common/CLAUDE.md
 
 # MAST_control — Claude Guidance
+
+Central backend orchestrator. Runs on `mast-wis-control`. Imports `MAST_common` as `common`, which is cloned as a **sibling** of this repo in the flat layout (`<top>/common/`, `<top>/control/`) and put on `sys.path` by the `mast.pth` the provisioning writes into the venv. It is no longer a submodule.
 
 ## Running
 
@@ -23,7 +25,7 @@ Any phase failure calls `Plan.abort()` which sends abort to all committed units 
 
 `GET /get`, `POST /execute`, `POST /postpone`, `POST /revive`, `POST /cancel`, `DELETE /delete`
 
-Utility: `python common/models/plans.py <plan-file.toml>` to parse and dump a plan as JSON.
+Utility: `python ../common/models/plans.py <plan-file.toml>` to parse and dump a plan as JSON.
 
 ## Project-wide LLM guidance
 
