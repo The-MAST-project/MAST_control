@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from common.config import Config
+from common.mast_logging import configure_logging, get_logger
 from control.controller import Controller
 from control.data_server import DataServer
 
@@ -71,9 +72,8 @@ if __name__ == "__main__":
     assert server_conf is not None, "cannot get server_conf"
 
     uvicorn_server = uvicorn.Server(config=uvicorn.Config(app=app, host=server_conf.listen_on, port=server_conf.port))
-    import logging
 
-    from common.mast_logging import configure_logging, get_logger
+    from common.mast_logging import get_logger
 
     logger = get_logger(__name__)
     logger.info(f"Starting MAST control server on {server_conf.listen_on}:{server_conf.port}...")
