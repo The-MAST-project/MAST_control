@@ -2,7 +2,7 @@
 
 # MAST_control — Claude Guidance
 
-Central backend orchestrator. Runs on `mast-wis-control`. Imports `MAST_common` as `common`, which is cloned as a **sibling** of this repo in the flat layout (`<top>/common/`, `<top>/control/`) and put on `sys.path` by the `mast.pth` the provisioning writes into the venv. It is no longer a submodule.
+Central backend orchestrator. Runs on `mast-ns-control` (the active site is `ns`). Imports `MAST_common` as `common`, which is cloned as a **sibling** of this repo in the flat layout (`<top>/common/`, `<top>/control/`) and put on `sys.path` by the `mast.pth` the provisioning writes into the venv. It is no longer a submodule.
 
 ## Running
 
