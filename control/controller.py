@@ -407,10 +407,20 @@ class Controller(Activities):
         self.activity_notification_clients: Set[WebSocket] = set()
         self.hostname = socket.gethostname().split(".")[0]
 
-        self.preferred_site = None
-        match self.hostname:
-            case "mast-wis-control":
-                self.preferred_site = "ns"
+        # The site this controller serves. This was a hostname match --
+        # `case "mast-wis-control": self.preferred_site = "ns"` -- which pinned the
+        # wis-named machine to the ns site. It stopped matching the moment the
+        # controller became mast-ns-control, leaving preferred_site None, and a None
+        # here is not inert: Scheduler.make_immediate_batch() logs and returns [] on
+        # every call, so batch scheduling is silently off.
+        #
+        # The machine's own site is in the bootstrap config, so take it from there
+        # rather than from its name. SpecApi already resolves the same way when given
+        # no site_name (common/api.py: `site = Config().local_site`).
+        local_site = Config().local_site
+        self.preferred_site = local_site.name if local_site else None
+        if self.preferred_site is None:
+            logger.error(f"{function_name()}: no local site in the configuration; scheduling will not run")
 
         self.config = ControllerConfig()
         sites = Config().get_sites()
