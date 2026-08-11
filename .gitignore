@@ -36,3 +36,7 @@ share/python-wheels/
 # before PyInstaller builds the exe
 .venv
 SPIE/
+
+# OpenSSL CA serial state, written by `make make-certs` (-CAcreateserial).
+# Local bookkeeping, regenerated on demand; not part of the deployed tree.
+*.srl

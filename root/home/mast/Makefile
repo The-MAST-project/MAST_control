@@ -17,6 +17,10 @@ help:
 	@echo "  deploy-certs             Install certs into /etc/ssl and reload nginx (needs root)"
 
 make-certs:
+	# Both are git-tracked directories, but git does not track empty ones: removing the
+	# retired mast-wis-control.crt took $(CERT_DIR) with it, and openssl will not create
+	# an output directory itself.
+	mkdir -p $(CERT_DIR) $(CA_DIR)
 	@echo "Generating local CA..."
 	openssl genrsa -out /tmp/mast-ca.key 4096
 	openssl req -x509 -new -nodes -key /tmp/mast-ca.key -sha256 -days 3650 \
@@ -27,10 +31,14 @@ make-certs:
 	openssl req -new -key /tmp/$(HOSTNAME).key \
 	    -out /tmp/$(HOSTNAME).csr \
 	    -subj "/CN=$(FQDN)"
+	# Written to a file rather than passed via `<(...)`: make runs recipes under
+	# /bin/sh, which is dash on Debian/Ubuntu, and process substitution is a bashism.
+	# It failed with: /bin/sh: Syntax error: "(" unexpected
+	printf "subjectAltName=DNS:$(FQDN),DNS:$(HOSTNAME),IP:$(IP)\n" > /tmp/$(HOSTNAME).ext
 	openssl x509 -req -in /tmp/$(HOSTNAME).csr \
 	    -CA $(CA_DIR)/mast-local-ca.crt -CAkey /tmp/mast-ca.key -CAcreateserial \
 	    -out $(CERT_DIR)/$(HOSTNAME).crt -days 3650 -sha256 \
-	    -extfile <(printf "subjectAltName=DNS:$(FQDN),DNS:$(HOSTNAME),IP:$(IP)")
+	    -extfile /tmp/$(HOSTNAME).ext
 	@openssl verify -CAfile $(CA_DIR)/mast-local-ca.crt $(CERT_DIR)/$(HOSTNAME).crt
 	@echo "Keys in /tmp (not committed). Certs in repo. Run 'make deploy-certs' (as root) to install."
 
