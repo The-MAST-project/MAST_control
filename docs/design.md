@@ -54,7 +54,7 @@ Execution semantics
 System context & configuration
 
 - Deployment topology:
-  - Up to ~20 MAST units (Windows IoT machines) control telescopes; 1 MAST-spec (spectrograph controller); 1 MAST-controller (Linux, e.g. mast-wis-control) hosts scheduler and config DB.
+  - Up to ~20 MAST units (Windows IoT machines) control telescopes; 1 MAST-spec (spectrograph controller); 1 MAST-controller (Linux, e.g. mast-ns-control) hosts scheduler and config DB.
   - Example sites: WIS (development) and NS (production). Unit naming supports short (e.g. '0','w') and long ('mast00','mastw') formats; short names are resolved to the local site's namespace.
   - Units are grouped by buildings/rows (affects UI grouping and physical placement but also can influence allocation policies).
 - Configuration DB:
