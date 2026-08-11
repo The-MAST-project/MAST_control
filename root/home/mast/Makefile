@@ -3,9 +3,9 @@
 
 SRC        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT  := $(abspath $(SRC)../../..)
-HOSTNAME   := mast-wis-control
-FQDN       := mast-wis-control.weizmann.ac.il
-IP         := 10.23.3.73
+HOSTNAME   := mast-ns-control
+FQDN       := mast-ns-control.weizmann.ac.il
+IP         := 10.23.1.181
 CERT_DIR   := $(REPO_ROOT)/root/etc/ssl/certs
 CA_DIR     := $(REPO_ROOT)/root/usr/local/share/ca-certificates
 KEY_DIR    := /etc/ssl/private
@@ -41,7 +41,7 @@ deploy-certs:
 	chmod 600 $(KEY_DIR)/$(HOSTNAME).key
 	cp $(CA_DIR)/mast-local-ca.crt /usr/local/share/ca-certificates/mast-local-ca.crt
 	update-ca-certificates
-	cp $(REPO_ROOT)/root/etc/nginx/conf.d/mast-wis-control.conf /etc/nginx/conf.d/
+	cp $(REPO_ROOT)/root/etc/nginx/conf.d/$(HOSTNAME).conf /etc/nginx/conf.d/
 	nginx -t && systemctl reload nginx
 	@echo "Certs deployed and nginx reloaded."
 
