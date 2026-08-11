@@ -74,10 +74,6 @@ class DataServer:
                     return (1, name)
             return (1, name)
 
-        def autofocus_storage_url(file_name: str) -> str:
-            path = Path(file_name)
-            return f"http://mast-wis-control:8008/{unit_name}/{path.relative_to(root)}"
-
         if not root.exists():
             return CanonicalResponse(errors=[f"Unit data not found at '{root}'"])
 
