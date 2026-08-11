@@ -21,6 +21,7 @@ from common.const import Const
 from common.dlipowerswitch import (
     DliPowerSwitch,
 )
+from common.filer import Filer
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification
 from common.models.batches import Batch
@@ -891,10 +892,31 @@ class Controller(Activities):
         assert self.in_progress.run_folder is not None
         assert notification.initiator is not None
         assert notification.initiator.hostname is not None
-        src = notification.shared_top
+        # `shared_top` is relative to the producer's shared root, so only this end can spell
+        # it: the producers' root is `Z:/MAST/<hostname>/` while ours is
+        # `/Storage/mast-share/MAST` with the host as the next component. Join it the same
+        # way DataServer addresses per-unit storage.
+        shared_root = Filer().shared.root
+        if os.path.isabs(notification.shared_top) or ":" in notification.shared_top:
+            # Pre-MAST_spec#39 producer: an absolute path, usually a `D:/MAST/...` ram path
+            # that is reaped once the products move and means nothing here anyway. Kept
+            # working-as-before rather than reinterpreted, so the repos need not deploy
+            # together, but it cannot produce a resolvable link.
+            logger.warning(
+                f"{op}: '{notification.initiator.hostname}' sent an absolute shared_top "
+                f"('{notification.shared_top}'); expected a path relative to the shared root"
+            )
+            src = notification.shared_top
+        else:
+            src = str(Path(shared_root) / notification.initiator.hostname / notification.shared_top)
+
         dst = Path(self.in_progress.run_folder) / notification.initiator.hostname / notification.shared_subpath
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
+            if not Path(src).exists():
+                # os.symlink happily creates a dangling link, which is how this went
+                # unnoticed; say so rather than leave a broken link behind silently.
+                logger.warning(f"{op}: symlink source '{src}' does not exist (link will dangle)")
             os.symlink(src, dst)
             logger.info(f"{op}: symlink '{src}' -> '{dst}'")
         except Exception as e:
