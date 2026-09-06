@@ -11,19 +11,24 @@ python app.py   # role + identity come from the bootstrap config file
                 # (/etc/wis/config.toml; set MAST_CONFIG to override for dev)
 ```
 
-## Plan Execution (`control/planning.py`)
+## Plan Execution
 
-Phases tracked as `AssignmentActivities` bitflags:
+`control/planning.py` owns the `Planner`: the per-state `PlansFolder`s, the transitions, and
+the HTTP routes. Execution itself is `Plan.execute()` in `common/models/plans.py`, with
+`common/models/batches.py` the sibling for batches.
+
+Phases tracked as `PlanActivities` / `BatchActivities` bitflags (`common/activities.py`):
 1. **Probing** — checks units and spec are detected and operational (quorum enforced; relaxed in non-production/debug mode)
 2. **Dispatching** — sends assignments to all operational units concurrently via `asyncio.gather`
 3. **WaitingForGuiding** — polls unit status every 20 s until all committed units report `UnitActivities.Guiding`, or `timeout_to_guiding` expires
-4. **ExposingSpec** — sends assignment to spectrograph, polls every 20 s until spec returns to `Idle`
+4. **WaitingForSpecDone** — sends assignment to spectrograph, polls every 20 s until spec returns to `Idle`
 
 Any phase failure calls `Plan.abort()` which sends abort to all committed units and the spec.
 
 ## Plan API routes (under `/mast/api/v1/control/plans/`)
 
-`GET /get`, `POST /execute`, `POST /postpone`, `POST /revive`, `POST /cancel`, `DELETE /delete`
+`GET /get`, `GET /new`, `POST /submit`, `POST /execute`, `POST /postpone`, `POST /revive`,
+`POST /cancel`, `DELETE /delete`
 
 Utility: `python ../common/models/plans.py <plan-file.toml>` to parse and dump a plan as JSON.
 
