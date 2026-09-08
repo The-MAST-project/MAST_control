@@ -12,10 +12,11 @@ back: `deploy-nginx`, `deploy-prometheus`, `deploy-certs`, `deploy-control-servi
 working order is repo → pull request → `make deploy-*` on the host, and `/etc` on
 `mast-ns-control` is not edited by hand.
 
-**Nothing enforces that.** No auto-deploy on merge, no CI check, no drift detection: an
-edit made directly on the host diverges silently, and the deploy is a manual step someone
-runs there as root. What holds the convention up is that the hand edit is now the worse
-path — it gets no review, and the next `make deploy-*` overwrites it without noticing.
+**Little enforces that.** There is no auto-deploy on merge and no CI, and `/etc` stays
+writable, so the deploy remains a manual step someone runs on the host as root. What
+there is, is a way to *ask*: `make check-deployed` (below) answers whether the host is
+still what this tree says, so a hand edit on the box — or a merged change nobody
+deployed — is no longer invisible.
 
 **The host stays authoritative for anything not in this tree** — `grafana.ini`, the
 systemd units this repo does not ship, whatever `sites-enabled/` currently holds.
@@ -35,6 +36,25 @@ against what the host was actually running.
   account, 90 KB of largely stock template, and the natural home for an admin password.
   Mirroring it needs a privileged read and a scrub pass; neither has been done.
 - Anything else carrying a credential.
+
+## Checking for drift
+
+```sh
+cd <checkout>/root/home/mast
+make check-deployed
+```
+
+Diffs every file this tree owns against its live counterpart and exits non-zero on any
+difference, so it works as a cron line or a CI step as readily as by hand. It reads only
+and **needs no root** — every tracked file is world-readable. Output is one line per
+file, `ok` / `DRIFTED` / `MISSING`, with a unified diff under each drifted one, read as
+`-` host, `+` repo.
+
+Two things it does not do. It knows only the files listed in the Makefile's `DEPLOYED`
+variable, so a file added under `root/` without an entry there is invisible to it — add
+both together. And it reports; it never reconciles. A `DRIFTED` line is a question with
+two legitimate answers: deploy the repo, or bring the host's change back into the repo
+and review it like any other.
 
 ## Deploying
 

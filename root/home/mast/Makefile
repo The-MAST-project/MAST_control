@@ -1,5 +1,5 @@
 # vi: se terse nows sts=4 sw=4 ts=4:
-.PHONY: help deploy-control-services make-certs deploy-certs deploy-nginx deploy-prometheus
+.PHONY: help deploy-control-services make-certs deploy-certs deploy-nginx deploy-prometheus check-deployed
 
 SRC        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT  := $(abspath $(SRC)../../..)
@@ -12,6 +12,16 @@ KEY_DIR    := /etc/ssl/private
 NGINX_CONF := $(REPO_ROOT)/root/etc/nginx/conf.d/$(HOSTNAME).conf
 PROM_CONF  := $(REPO_ROOT)/root/etc/prometheus/prometheus.yml
 
+# Every file this tree owns, as <path under root/>:<path on the host>. The list
+# is what check-deployed walks; a file added to root/ without an entry here is
+# invisible to the drift check, so add both together.
+DEPLOYED := \
+    etc/nginx/conf.d/$(HOSTNAME).conf:/etc/nginx/conf.d/$(HOSTNAME).conf \
+    etc/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml \
+    etc/ssl/certs/$(HOSTNAME).crt:/etc/ssl/certs/$(HOSTNAME).crt \
+    usr/local/share/ca-certificates/mast-local-ca.crt:/usr/local/share/ca-certificates/mast-local-ca.crt \
+    home/mast/.config/systemd/user/mast-control.service:$(HOME)/.config/systemd/user/mast-control.service
+
 help:
 	@echo "Targets:"
 	@echo "  deploy-control-services  Copy and enable user systemd services for MAST_control"
@@ -19,6 +29,7 @@ help:
 	@echo "  deploy-certs             Install certs into /etc/ssl and reload nginx (needs root)"
 	@echo "  deploy-nginx             Install the nginx vhost, test it, reload (needs root)"
 	@echo "  deploy-prometheus        Install prometheus.yml and SIGHUP prometheus (needs root)"
+	@echo "  check-deployed           Diff every tracked file against the host (no root)"
 
 make-certs:
 	# Both are git-tracked directories, but git does not track empty ones: removing the
@@ -116,3 +127,35 @@ deploy-control-services:
 	systemctl --user enable --now mast-control
 	@echo "mast-control service deployed and started"
 	@systemctl --user status mast-control --no-pager
+
+# Is the host still what this repo says it is?
+#
+# The repo is authoritative for the files it carries, but nothing enforces
+# that: no auto-deploy, no CI, and /etc stays writable. This is the check that
+# turns the convention into something answerable -- run it and a hand edit made
+# on the box, or a merged change nobody deployed, stops being invisible.
+#
+# Reads only, and needs no root: every tracked file is world-readable. Exits
+# non-zero on any difference, so it also works as a cron line or a CI step on a
+# runner that can reach the host.
+check-deployed:
+	@rc=0; \
+	for pair in $(DEPLOYED); do \
+	    src=$(REPO_ROOT)/root/$${pair%%:*}; \
+	    dst=$${pair#*:}; \
+	    if [ ! -e "$$dst" ]; then \
+	        printf 'MISSING  %s\n' "$$dst"; rc=1; \
+	    elif diff -q "$$src" "$$dst" >/dev/null 2>&1; then \
+	        printf 'ok       %s\n' "$$dst"; \
+	    else \
+	        printf 'DRIFTED  %s\n' "$$dst"; \
+	        diff -u "$$dst" "$$src" 2>&1 | sed 's/^/         /'; \
+	        rc=1; \
+	    fi; \
+	done; \
+	if [ $$rc -eq 0 ]; then \
+	    echo "The host matches the repo."; \
+	else \
+	    echo "Differences above are - host, + repo. Deploy the repo, or bring the host's change back into it."; \
+	fi; \
+	exit $$rc
