@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 from common.activities import Activities, ControllerActivities
 from common.api import ControllerApi, SpecApi, UnitApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config, Site, UnitConfig
+from common.config import Config, ConfigError, Site, UnitConfig
 from common.const import Const
 from common.dlipowerswitch import (
     DliPowerSwitch,
@@ -306,7 +306,15 @@ logger = get_logger(__name__)
 
 
 class ControllerConfig(BaseModel):
-    managed_sites: list[Site] = []
+    # `managed_sites` used to sit here beside this, refreshed by a 30-second timer. It is
+    # `Controller.managed_sites()` now: `Config().get_sites()` is memoized per generation, so
+    # a live lookup is a dict probe that is always current, and a copy kept in step by a poll
+    # is the thing the configuration store was built to remove. See MAST_common's
+    # `config/_memo.py`.
+    #
+    # `managed_units` stays a snapshot, and is still built once and never refreshed: it feeds
+    # the `power_switches` this controller constructs, which is cached state rather than
+    # configuration, so making it live is a reconciliation job and not the same change.
     managed_units: dict[str, dict[str, UnitConfig | None]] = {}  # site_name -> unit_name -> UnitConfig | None
 
 
@@ -424,11 +432,7 @@ class Controller(Activities):
             logger.error(f"{function_name()}: no local site in the configuration; scheduling will not run")
 
         self.config = ControllerConfig()
-        sites = Config().get_sites()
-        for site in sites:
-            if self.hostname != site.controller_host:
-                continue
-            self.config.managed_sites.append(site)
+        for site in self.managed_sites():
             self.config.managed_units[site.name] = {}
             for unit_name in site.deployed_units:
                 if unit_name not in site.units_in_maintenance:
@@ -442,7 +446,7 @@ class Controller(Activities):
         self.status_cache: dict[str, dict[str, Any]] = {}
         self.power_switches: dict[str, dict[str, DliPowerSwitch]] = {}  # power_switches[site_name][unit_name]
 
-        for site in self.config.managed_sites:
+        for site in self.managed_sites():
             self.status_cache[site.name] = {
                 "units": {},
                 "spec": None,
@@ -523,9 +527,10 @@ class Controller(Activities):
                         machine_name=site.controller_host,
                     )
 
-        self.config_timer: RepeatTimer = RepeatTimer(30, self.on_config_timer)
-        self.config_timer.start()
-
+        # No config timer. There was one, at 30 seconds, whose whole body re-read the sites
+        # into a copy; `managed_sites()` reads them live instead. What the poll was really
+        # for -- giving a newly assigned site a `status_cache` entry -- is `refresh()`'s job
+        # and happens on the fetch timer below, every 2 seconds.
         self.fetch_timer: RepeatTimer = RepeatTimer(2, self.on_fetch_timer)
         self.fetch_timer.daemon = False  # Don't make it a daemon so we can clean up properly
 
@@ -571,8 +576,28 @@ class Controller(Activities):
         logger.info(f"Signal {signum} received, initiating graceful shutdown")
         self._shutdown_event.set()
 
-    def on_config_timer(self):
-        self.config.managed_sites = Config().get_sites()
+    def managed_sites(self) -> list[Site]:
+        """The sites this host is the controller for, read live.
+
+        A `sites` document describes the whole fleet, and `controller_host` is what says
+        which of them are this machine's. Stated once, here, because it was stated twice and
+        the two disagreed: `__init__` filtered and the config timer did not, so thirty
+        seconds after startup the controller held every site in the database. Two things
+        followed, both silent -- `refresh()` treats a site with no `status_cache` entry as
+        one "we have been assigned since last config load" and creates an empty one, so the
+        controller adopted the whole fleet; and `sites_status()` then reported each of those
+        with no units and a spectrograph permanently `detected=False, operational=False`, so
+        a healthy site at another observatory rendered as a dead one here.
+
+        Called on every read rather than cached, which is why the timer that used to keep the
+        copy in step is gone. `Config().get_sites()` is memoized on the generation of the
+        `sites` collection, so this is a dict probe that returns the same list object until
+        the collection actually changes -- cheaper than the poll it replaces, and current
+        rather than up to thirty seconds behind. It needs `Config().start_watching()` to have
+        been called, which `app.py` does in its lifespan; without it the store never reloads
+        and this is merely as stale as the copy was.
+        """
+        return [site for site in Config().get_sites() if site.controller_host == self.hostname]
 
     def on_fetch_timer(self):
         self.refresh()
@@ -588,7 +613,7 @@ class Controller(Activities):
             logger.info("Timer stopped, assuming shutdown")
             return
 
-        for site_name in [s.name for s in self.config.managed_sites]:
+        for site_name in [s.name for s in self.managed_sites()]:
             if site_name not in self.status_cache:
                 """
                 We have been assigned a new site to manage since last config load
@@ -722,8 +747,16 @@ class Controller(Activities):
         with self.lock:
             ret = SitesStatus(timestamp=time_stamp(), sites={})
 
-            for site_name in [s.name for s in self.config.managed_sites]:
-                site_cache = self.status_cache[site_name]
+            for site_name in [s.name for s in self.managed_sites()]:
+                # `.get`, not `[]`. A site assigned to this host between two calls is visible
+                # here the moment the configuration changes, while its cache entry is
+                # `refresh()`'s to create on the next fetch tick -- so there is a window,
+                # brief and entirely normal, where the site is managed and has no cache.
+                # Indexing turned that into a KeyError out of the status endpoint; skipping
+                # it just leaves the site out of one response.
+                site_cache = self.status_cache.get(site_name)
+                if site_cache is None:
+                    continue
 
                 unit_statuses: dict[str, UnitStatus] = {}
                 for unit_name, cached_value in site_cache["units"].items():
@@ -958,7 +991,26 @@ class Controller(Activities):
         return CanonicalResponse(value=Config().get_sites())
 
     def endpoint_config_set_unit(self, site_name: str, unit_name: str, unit_conf: UnitConfig) -> CanonicalResponse:
-        Config().set_unit(site_name, unit_name, unit_conf)
+        """Save a unit's configuration, and say so in the envelope either way.
+
+        `set_unit` raises now. It used to log a failed write and return, so this endpoint
+        answered `ok` to a caller whose configuration had been lost -- which is the bug
+        MAST_common#96 fixed on its side. Left unhandled here, the exception escapes into
+        FastAPI and becomes a 500 carrying its own error body: the write is correctly
+        reported as failed, but not in a shape any client of this API can read. The GUI
+        parses CanonicalResponse and nothing else.
+
+        Two raising paths, both worth telling a caller apart from a bug:
+          - ConfigError, when the database is unreachable and the process is running on the
+            boot cache, or when the write itself failed;
+          - ValueError, when the site/unit membership does not check out, which is a bad
+            request rather than a failure to save.
+        """
+        try:
+            Config().set_unit(site_name, unit_name, unit_conf)
+        except (ConfigError, ValueError) as ex:
+            logger.error(f"{function_name()}: could not save the configuration for unit '{unit_name}': {ex}")
+            return CanonicalResponse(errors=[f"could not save the configuration for unit '{unit_name}': {ex}"])
         return CanonicalResponse_Ok
 
     def endpoint_config_get_thar_filters(self) -> CanonicalResponse:
@@ -999,8 +1051,6 @@ class Controller(Activities):
         self._shutdown_event.set()
 
         # Stop timers
-        if hasattr(self, "config_timer") and self.config_timer:
-            self.config_timer.cancel()
         if hasattr(self, "fetch_timer") and self.fetch_timer:
             self.fetch_timer.cancel()
 
