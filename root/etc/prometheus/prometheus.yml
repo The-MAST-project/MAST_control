@@ -1,0 +1,45 @@
+global:
+     scrape_interval: 15s
+     evaluation_interval: 15s
+
+scrape_configs:
+   # Prometheus itself
+   - job_name: 'prometheus'
+     static_configs:
+       - targets: ['localhost:9090']
+
+   # Linux machines with Node Exporter.
+   # Targets are named hosts, since the instance label is what panels display.
+   # Node Exporter Full keys on node_uname_info's own nodename label, so this
+   # job needs no relabelling of its own.
+   - job_name: 'linux-servers'
+     static_configs:
+       - targets:
+         - 'mast-ns-control:9100'
+
+   # Windows machines with Windows Exporter
+   - job_name: 'windows-servers'
+     relabel_configs:
+       - source_labels: [__address__]
+         regex: '([^:]+)(?::\d+)?'
+         target_label: hostname
+         replacement: '${1}'
+     static_configs:
+       - targets:
+         # The unit fleet, per server/unit-registry.json in MAST_provisioning,
+         # whose windows-exporter-monitoring provider (order 2400) installs the
+         # exporter on every unit. A powered-off unit reads down; that is the
+         # signal, and no alerting rides on it.
+         - 'mast00:9182'
+         - 'mast01:9182'
+         - 'mast02:9182'
+         - 'mast03:9182'
+         - 'mast04:9182'
+         - 'mast05:9182'
+         - 'mast06:9182'
+         - 'mast07:9182'
+         - 'mast08:9182'
+         - 'mastw:9182'
+         # Not a unit: the Neot Smadar spectrograph host, which is Windows and
+         # runs windows_exporter on the same port.
+         - 'mast-ns-spec:9182'
