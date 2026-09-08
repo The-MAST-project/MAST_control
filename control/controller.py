@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError
 from common.activities import Activities, ControllerActivities
 from common.api import ControllerApi, SpecApi, UnitApi
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
-from common.config import Config, Site, UnitConfig
+from common.config import Config, ConfigError, Site, UnitConfig
 from common.const import Const
 from common.dlipowerswitch import (
     DliPowerSwitch,
@@ -958,7 +958,26 @@ class Controller(Activities):
         return CanonicalResponse(value=Config().get_sites())
 
     def endpoint_config_set_unit(self, site_name: str, unit_name: str, unit_conf: UnitConfig) -> CanonicalResponse:
-        Config().set_unit(site_name, unit_name, unit_conf)
+        """Save a unit's configuration, and say so in the envelope either way.
+
+        `set_unit` raises now. It used to log a failed write and return, so this endpoint
+        answered `ok` to a caller whose configuration had been lost -- which is the bug
+        MAST_common#96 fixed on its side. Left unhandled here, the exception escapes into
+        FastAPI and becomes a 500 carrying its own error body: the write is correctly
+        reported as failed, but not in a shape any client of this API can read. The GUI
+        parses CanonicalResponse and nothing else.
+
+        Two raising paths, both worth telling a caller apart from a bug:
+          - ConfigError, when the database is unreachable and the process is running on the
+            boot cache, or when the write itself failed;
+          - ValueError, when the site/unit membership does not check out, which is a bad
+            request rather than a failure to save.
+        """
+        try:
+            Config().set_unit(site_name, unit_name, unit_conf)
+        except (ConfigError, ValueError) as ex:
+            logger.error(f"{function_name()}: could not save the configuration for unit '{unit_name}': {ex}")
+            return CanonicalResponse(errors=[f"could not save the configuration for unit '{unit_name}': {ex}"])
         return CanonicalResponse_Ok
 
     def endpoint_config_get_thar_filters(self) -> CanonicalResponse:
