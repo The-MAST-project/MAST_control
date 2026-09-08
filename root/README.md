@@ -30,30 +30,41 @@ against what the host was actually running.
   Mirroring it needs a privileged read and a scrub pass; neither has been done.
 - Anything else carrying a credential.
 
-## Deploying the nginx vhost
+## Deploying
 
-Two things to know before copying it onto the host.
+Both targets run **on the host**, as root, from a checkout there
+(`/home/mast/PycharmProjects/MAST_control`), from `root/home/mast/`. Nothing here
+reaches out over the network — there is no `ssh` or `scp` in the Makefile.
 
-**It claims `default_server` on ports 80 and 8000, and the stock Debian site at
-`/etc/nginx/sites-enabled/default` claims the same.** Both enabled at once is a
-duplicate-default-server error and nginx will not start. Remove the stock symlink in the
-same step:
+```sh
+cd <checkout>/root/home/mast
+sudo make deploy-nginx        # vhost -> /etc/nginx/conf.d, nginx -t, reload
+sudo make deploy-prometheus   # promtool check, prometheus.yml -> /etc, SIGHUP
+```
+
+`deploy-nginx` refuses while `/etc/nginx/sites-enabled/default` exists. That stock
+Debian site claims `default_server` on port 80 and so does this vhost, and two of them
+is a startup error — nginx failing to start takes the control host's whole web surface
+with it. Remove the symlink and re-run:
 
 ```sh
 rm /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
 ```
+
+The live vhost is kept as `.bak` across the test and restored if `nginx -t` fails, so a
+bad config cannot survive the target that installed it. `.bak` is not matched by the
+`conf.d/*.conf` include, so the backup is inert.
+
+`deploy-prometheus` reloads with **SIGHUP**, not `systemctl reload`: the unit declares no
+`ExecReload` (`CanReload=no`), and prometheus runs without `--web.enable-lifecycle`, so
+`POST /-/reload` answers 403. SIGHUP costs no scrape gap. The config is checked with
+`promtool` *before* it is copied, so a bad file never reaches `/etc`.
 
 **`nginx -t` and `nginx -T` need root here** — the vhost reads
 `/etc/ssl/private/mast-ns-control.key`, which the `mast` account cannot open, so a
 non-root test reports a spurious `[emerg] cannot load certificate key`.
 
-## Reloading Prometheus
-
-`prometheus.yml` is picked up by a SIGHUP, with no scrape gap and no restart:
-
-```sh
-promtool check config /etc/prometheus/prometheus.yml
-systemctl reload prometheus
-curl -s localhost:9090/api/v1/targets?state=active | jq '.data.activeTargets[].labels'
-```
+`deploy-certs` installs certificates only. It used to copy the vhost as well, which made
+a config-only change impossible to ship through it: the target reads
+`/tmp/<host>.key`, a file that exists only just after `make-certs`, and died on the
+missing key before reaching the copy.
