@@ -22,6 +22,13 @@ DEPLOYED := \
     usr/local/share/ca-certificates/mast-local-ca.crt:/usr/local/share/ca-certificates/mast-local-ca.crt \
     home/mast/.config/systemd/user/mast-control.service:$(HOME)/.config/systemd/user/mast-control.service
 
+# Divergences that are known and deliberately not failures. mast-control.service
+# is absent from mast-ns-control, and that host is not this work's to change:
+# whether the control service belongs there, and in what form, is its owner's
+# call. Reported on every run so it stays visible, but it does not fail the
+# check -- a drift check that is always red is a drift check nobody reads.
+TOLERATED := $(HOME)/.config/systemd/user/mast-control.service
+
 help:
 	@echo "Targets:"
 	@echo "  deploy-control-services  Copy and enable user systemd services for MAST_control"
@@ -143,10 +150,14 @@ check-deployed:
 	for pair in $(DEPLOYED); do \
 	    src=$(REPO_ROOT)/root/$${pair%%:*}; \
 	    dst=$${pair#*:}; \
+	    case " $(TOLERATED) " in *" $$dst "*) tol=1 ;; *) tol=0 ;; esac; \
 	    if [ ! -e "$$dst" ]; then \
-	        printf 'MISSING  %s\n' "$$dst"; rc=1; \
+	        if [ $$tol -eq 1 ]; then printf 'tolerated %s (absent; not this repo to place)\n' "$$dst"; \
+	        else printf 'MISSING  %s\n' "$$dst"; rc=1; fi; \
 	    elif diff -q "$$src" "$$dst" >/dev/null 2>&1; then \
 	        printf 'ok       %s\n' "$$dst"; \
+	    elif [ $$tol -eq 1 ]; then \
+	        printf 'tolerated %s (differs; not this repo to change)\n' "$$dst"; \
 	    else \
 	        printf 'DRIFTED  %s\n' "$$dst"; \
 	        diff -u "$$dst" "$$src" 2>&1 | sed 's/^/         /'; \
@@ -154,7 +165,7 @@ check-deployed:
 	    fi; \
 	done; \
 	if [ $$rc -eq 0 ]; then \
-	    echo "The host matches the repo."; \
+	    echo "The host matches the repo, tolerated entries aside."; \
 	else \
 	    echo "Differences above are - host, + repo. Deploy the repo, or bring the host's change back into it."; \
 	fi; \

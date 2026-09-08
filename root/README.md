@@ -50,6 +50,13 @@ and **needs no root** — every tracked file is world-readable. Output is one li
 file, `ok` / `DRIFTED` / `MISSING`, with a unified diff under each drifted one, read as
 `-` host, `+` repo.
 
+A `tolerated` line is a divergence that is known and deliberately not a failure. The
+Makefile's `TOLERATED` variable holds them, currently just
+`mast-control.service`, which is absent from `mast-ns-control`: whether the control
+service belongs on that host, and in what form, is its owner's call and not this repo's.
+It is printed on every run so it stays visible, and it does not turn the check red — a
+drift check that is always red is one nobody reads.
+
 Two things it does not do. It knows only the files listed in the Makefile's `DEPLOYED`
 variable, so a file added under `root/` without an entry there is invisible to it — add
 both together. And it reports; it never reconciles. A `DRIFTED` line is a question with
@@ -94,3 +101,48 @@ non-root test reports a spurious `[emerg] cannot load certificate key`.
 a config-only change impossible to ship through it: the target reads
 `/tmp/<host>.key`, a file that exists only just after `make-certs`, and died on the
 missing key before reaching the copy.
+
+## What is established, and what is not
+
+The work this tree came out of was scoped to **Grafana and the metrics behind it**. Much
+was measured on the host along the way; a fair amount was not, and the two are worth
+keeping apart.
+
+**Established, by measurement on `mast-ns-control` (2026-09-08):**
+
+- Grafana and Prometheus on this host are MAST's own monitoring stack — Grafana on `:3000`
+  served from the `/grafana/` sub-path, one Prometheus datasource, `localhost:9090`,
+  default. The Grafana at `10.23.1.25:3000` is the LAST observatory's and carries the
+  weather/safety dashboard `mast_safety` links; the two exporter dashboards `MAST_gui`
+  links are relative paths served from here.
+- `mast@weizmann.ac.il` authenticates against this Grafana at viewer level, not admin.
+- The Windows Exporter dashboard (`IV0hu1m7z`) selects a host with the template variable
+  **`server`**, whose values are instances like `mast01:9182`.
+- windows_exporter answers on the units — mast01 and mast03 sampled directly — and on
+  `mast-ns-spec`, which is Windows and uses the same port despite the name.
+- Prometheus here reloads on **SIGHUP only**: the unit declares no `ExecReload`, and the
+  process runs without `--web.enable-lifecycle`, so `POST /-/reload` answers 403.
+- The nginx vhost and both certificates in this tree match the host byte-for-byte.
+
+**Not established:**
+
+- **Whether the dashboards render the fleet's data correctly** once it is scraped. Nothing
+  has been checked past the scrape config. One known complication: the `windows-servers`
+  relabel writes a `hostname` label that collides with one the exporter already publishes,
+  so `windows_os_hostname` comes back carrying both `hostname` (ours) and
+  `exported_hostname` (its own). Whether the relabel is needed at all is open.
+- **Which Windows dashboard is meant to be the live one.** There are two — the 22-panel
+  `IV0hu1m7z` that `MAST_gui` links, and a 27-panel "Windows Exporter Dashboard 2024"
+  keyed on `job`/`hostname`/`instance` whose variables have never been populated.
+- **The GUI.** `/mast-dash/` and `/mast-backend/` proxy to 8010 and 8002, both of which
+  are down, so those locations answer 502. Whether they ever served here, what owns them,
+  and when they last ran are all unknown — deliberately out of scope, and their nginx
+  locations were left exactly as found.
+- **`mast-control.service`**, per the tolerated entry above.
+- **`grafana.ini`.** Unreadable by the `mast` account and never inspected.
+- **Whether the units trust the local CA**, which decides whether an operator browsing to
+  `https://mast-ns-control.weizmann.ac.il` from a unit sees a warning. Untested, and the
+  reason a unit-side Grafana shortcut is better aimed at `http://mast-ns-control:3000/`
+  directly.
+- **That any of this works on the host.** Nothing in this tree has been deployed; the two
+  `DRIFTED` lines are exactly that.
