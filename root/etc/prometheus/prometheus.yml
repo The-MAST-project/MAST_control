@@ -1,0 +1,30 @@
+global:
+     scrape_interval: 15s
+     evaluation_interval: 15s
+
+scrape_configs:
+   # Prometheus itself
+   - job_name: 'prometheus'
+     static_configs:
+       - targets: ['localhost:9090']
+
+   # Linux machines with Node Exporter
+   - job_name: 'linux-servers'
+     static_configs:
+       - targets: 
+         - 'localhost:9100'
+         # Add more Linux machines here
+
+   # Windows machines with Windows Exporter
+   - job_name: 'windows-servers'
+     relabel_configs:
+       - source_labels: [__address__]
+         regex: '([^:]+)(?::\d+)?'
+         target_label: hostname
+         replacement: '${1}'
+     static_configs:
+       - targets:
+         - 'mastw:9182'
+         - 'mast00:9182'
+         - 'mast-wis-spec:9182'
+         # Add more Windows machines here
