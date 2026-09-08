@@ -116,17 +116,41 @@ deploy-nginx:
 # (CanReload=no) and prometheus is started without --web.enable-lifecycle, so
 # POST /-/reload answers 403. SIGHUP is the only reload this host accepts, and
 # it costs no scrape gap.
+#
+# SIGHUP is asynchronous and returns immediately, so the reload is CONFIRMED
+# rather than assumed: this waits for
+# prometheus_config_last_reload_success_timestamp_seconds to pass the moment the
+# signal was sent, and only then prints the targets. Sleeping instead printed
+# whatever was loaded a moment earlier -- on the first real deploy that meant
+# the OLD target list under the words "deployed and reloaded", which is the one
+# thing a deploy tool must not do. A reload that does not confirm within 20s
+# fails the target: prometheus goes on serving the previous config, and saying
+# so is the entire point.
 deploy-prometheus:
 	@[ "$(shell id -u)" = "0" ] || { echo "Error: deploy-prometheus must be run as root"; exit 1; }
 	promtool check config $(PROM_CONF)
 	cp $(PROM_CONF) /etc/prometheus/prometheus.yml
 	chown prometheus:prometheus /etc/prometheus/prometheus.yml
 	chmod 644 /etc/prometheus/prometheus.yml
-	systemctl kill -s HUP prometheus
-	@echo "prometheus.yml deployed and reloaded. Active targets:"
-	@sleep 2
-	@curl -s --noproxy '*' 'http://127.0.0.1:9090/api/v1/targets?state=active' \
-	    | tr ',' '\n' | grep -o '"instance":"[^"]*"' | sort -u || true
+	@t0=$$(date +%s); \
+	systemctl kill -s HUP prometheus; \
+	ok=0; i=0; \
+	while [ $$i -lt 20 ]; do \
+	    ts=$$(curl -s --noproxy '*' \
+	        'http://127.0.0.1:9090/api/v1/query?query=prometheus_config_last_reload_success_timestamp_seconds' \
+	        | tr ',' '\n' | grep -o '"[0-9][0-9.]*"' | tail -1 | tr -d '"'); \
+	    case "$$ts" in [0-9]*) [ "$${ts%%.*}" -ge "$$t0" ] && { ok=1; break; } ;; esac; \
+	    i=$$((i+1)); sleep 1; \
+	done; \
+	if [ $$ok -eq 1 ]; then \
+	    echo "prometheus reloaded the new config. Active targets:"; \
+	else \
+	    echo "prometheus did NOT confirm a successful config reload within 20s -- it is"; \
+	    echo "still running the previous config. Check: journalctl -u prometheus -n 20"; \
+	fi; \
+	curl -s --noproxy '*' 'http://127.0.0.1:9090/api/v1/targets?state=active' \
+	    | tr ',' '\n' | grep -o '"instance":"[^"]*"' | sort -u; \
+	[ $$ok -eq 1 ]
 
 deploy-control-services:
 	cp $(SRC).config/systemd/user/mast-control.service $(HOME)/.config/systemd/user/
