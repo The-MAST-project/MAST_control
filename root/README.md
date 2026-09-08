@@ -6,15 +6,21 @@ on the host, and so on.
 
 ## Direction of truth
 
-**Today the host is authoritative and this tree is a duplicate**, captured by hand.
-Nothing deploys from here on its own, and a file changed here has no effect on a running
-host until someone copies it across. The duplicate earns its place by making the
-configuration reviewable: a change arrives as a diff in a pull request instead of as an
-edit on a box whose history no one can reconstruct.
+**This tree is authoritative for the files it contains.** Its content was verified
+against the live host before any of it was edited, and `root/home/mast/Makefile` puts it
+back: `deploy-nginx`, `deploy-prometheus`, `deploy-certs`, `deploy-control-services`. The
+working order is repo → pull request → `make deploy-*` on the host, and `/etc` on
+`mast-ns-control` is not edited by hand.
 
-**The intended end state is the reverse** — the repo authoritative, applied after a PR
-merges. `root/home/mast/Makefile` is the seed of it: `deploy-certs` and
-`deploy-control-services` already push from the repo onto the filesystem.
+**Nothing enforces that.** No auto-deploy on merge, no CI check, no drift detection: an
+edit made directly on the host diverges silently, and the deploy is a manual step someone
+runs there as root. What holds the convention up is that the hand edit is now the worse
+path — it gets no review, and the next `make deploy-*` overwrites it without noticing.
+
+**The host stays authoritative for anything not in this tree** — `grafana.ini`, the
+systemd units this repo does not ship, whatever `sites-enabled/` currently holds.
+Bringing one of those under version control means capturing it verified-identical first,
+before any edit, the way `prometheus.yml` was.
 
 Every file was compared against the live host on 2026-09-08 before being touched. The
 nginx vhost and the certificate matched byte-for-byte; `prometheus.yml` was absent here
