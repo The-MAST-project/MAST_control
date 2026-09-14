@@ -409,7 +409,7 @@ class Controller(Activities):
             self.planner = Planner(controller=self)
         except Exception as e:
             logger.error(f"failed to initialize Planner: {e}")
-            raise Exception(f"failed to initialize Planner: {e}") from e
+            raise
 
         self._terminated = False
 
