@@ -268,6 +268,7 @@ class Planner:
                         error = f"error transitioning plan {plan_id} to state {target_state}: {e}"
                         errors.append(error)
                         logger.error(error)
+                    break
             else:
                 error = f"invalid transition from {current_state} to {target_state} for plan {plan_id}"
                 errors.append(error)
