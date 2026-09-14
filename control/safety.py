@@ -1,7 +1,3 @@
-import httpx
-from typing import List
-
-
 class SafetyMonitor:
     """
     Monitors various safety inputs and produces:
@@ -15,5 +11,5 @@ class SafetyMonitor:
     # def is_safe(self) -> bool:
     #     with httpx.Client() as client:
 
-    def why_not_safe(self) -> List[str]:
+    def why_not_safe(self) -> list[str]:
         pass

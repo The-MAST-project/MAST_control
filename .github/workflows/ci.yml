@@ -1,0 +1,63 @@
+# Continuous integration for MAST_control.
+#
+# Lint only, for now: this repo has no test suite (no tests/ directory), and the
+# obvious substitute -- importing app.py -- instantiates Controller() at module
+# level, which needs a live MongoDB config DB. That is not something a runner can
+# fake without infrastructure this repo does not carry, so there is nothing to run
+# beyond static checks. Same situation as MAST_spec and MAST_gui, neither of which
+# has CI either; MAST_common and MAST_unit both have real test suites, which is why
+# their workflows also run pytest.
+#
+# Lint is BLOCKING and, as of 2026-09-14, green: both `ruff format --check` and
+# `ruff check` pass. It started at 65 findings; the fixes are split across the
+# commits that introduced this workflow, so a red run means a real regression,
+# not debt showing through.
+#
+# The 18 blind-except (BLE001) findings that made up most of the original debt:
+# 7 were genuinely narrowable (ValueError, OSError, pydantic.ValidationError) and
+# are now caught specifically; the other 11 are deliberate boundary catches --
+# API-handler top levels, futures/callback completions, arbitrary transition
+# callables, parsing of untrusted files -- and carry a `# noqa: BLE001` with a
+# one-line reason instead of a guessed-at exception type.
+#
+# Runs on Linux because ruff is platform-independent and that is also control's
+# actual deployment platform (mast-ns-control).
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          # ruff.toml sets target-version = "py312"; keep these in step.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install ruff
+        # requirements-dev.txt pins the version, so CI and every workstation agree on
+        # what counts as a finding. Nothing else is needed: ruff never imports the code.
+        run: python -m pip install --upgrade pip -r requirements-dev.txt
+
+      - name: Format
+        # Deliberately before `ruff check`: this one is a single `ruff format .` away,
+        # so surfacing it first means the cheap half of the debt is not hidden behind
+        # the expensive half.
+        run: ruff format --check .
+
+      - name: Lint
+        run: ruff check .

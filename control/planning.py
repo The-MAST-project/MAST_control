@@ -1,9 +1,9 @@
 import asyncio
 import shutil
+from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from threading import Lock
-from typing import Callable
 
 import tomlkit
 import ulid
@@ -22,6 +22,8 @@ from common.paths import PathMaker
 from common.utils import function_name
 
 logger = get_logger(__name__)
+
+
 def _import_plan_find():
     """Import mast-plan-find tool (hyphenated name and no .py extension require importlib)."""
     import importlib.machinery
@@ -54,7 +56,8 @@ class PlansFolder:
     - all the files named 'PLAN_...toml' in the folder are loaded into the provided list of plans
     - watchers are set up to handle:
       - file creation: the plan is loaded and added to the list
-      - file deletion: the folder is scanned to figure out which ULID was deleted.  the respective plan gets deleted from the list
+      - file deletion: the folder is scanned to figure out which ULID was deleted, and the
+        respective plan gets deleted from the list
       - file modification: we load the plan and update the respective element in the list (by ULID)
     """
 
@@ -85,7 +88,7 @@ class PlansFolder:
                 try:
                     plan = Plan.from_toml_file(str(path))
                     plan.full_path = path
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 -- one bad plan file must not block loading the rest
                     logger.error(f"could not load plan from {path}, error: {e}")
                     continue
                 self.plans.append(plan)
@@ -194,7 +197,7 @@ class Planner:
 
         try:
             _do_scrape()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- scraping must not block Planner init
             logger.warning(f"Planner init: scrape failed: {e}")
 
         self.transitions: dict[PlanState, list[tuple[PlanState, Callable]]] = {
@@ -262,10 +265,11 @@ class Planner:
                 if state == target_state:
                     try:
                         action(plan)
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 -- action is an arbitrary transition callable; one plan's failure must not stop the batch
                         error = f"error transitioning plan {plan_id} to state {target_state}: {e}"
                         errors.append(error)
                         logger.error(error)
+                    break
             else:
                 error = f"invalid transition from {current_state} to {target_state} for plan {plan_id}"
                 errors.append(error)
@@ -314,7 +318,7 @@ class Planner:
 
         try:
             scraping_results = _load_scraping_results()
-        except Exception:
+        except Exception:  # noqa: BLE001 -- scraping results are optional context, never load-bearing
             scraping_results = None
 
         try:
@@ -333,7 +337,7 @@ class Planner:
                     scraping_results=scraping_results,
                 )
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- API endpoint: any failure must come back as an envelope, not a 500
             return CanonicalResponse(errors=[f"{function_name()}: error getting plans: {e}"])
 
     def locate_plan(self, ulid: str) -> tuple[PlanState, Plan] | None:
@@ -348,35 +352,35 @@ class Planner:
         assert plan is not None and plan.full_path is not None
         new_path = self.canceled_folder.folder_path / plan.full_path.name
 
-        logger.debug(f"canceling plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
+        logger.debug(f"canceling plan {plan.ulid}, moving {plan.full_path!s} to {new_path!s}")
         shutil.move(str(plan.full_path), str(new_path))
 
     def do_postpone_plan(self, plan: Plan):
         assert plan is not None and plan.full_path is not None
         new_path = self.postponed_folder.folder_path / plan.full_path.name
 
-        logger.debug(f"postponing plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
+        logger.debug(f"postponing plan {plan.ulid}, moving {plan.full_path!s} to {new_path!s}")
         shutil.move(str(plan.full_path), str(new_path))
 
     def do_revive_plan(self, plan: Plan):
         assert plan is not None and plan.full_path is not None
         new_path = self.pending_folder.folder_path / plan.full_path.name
 
-        logger.debug(f"reviving plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
+        logger.debug(f"reviving plan {plan.ulid}, moving {plan.full_path!s} to {new_path!s}")
         shutil.move(str(plan.full_path), str(new_path))
 
     def do_delete_plan(self, plan: Plan):
         assert plan is not None and plan.full_path is not None
         new_path = self.deleted_folder.folder_path / plan.full_path.name
 
-        logger.debug(f"deleting plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
+        logger.debug(f"deleting plan {plan.ulid}, moving {plan.full_path!s} to {new_path!s}")
         shutil.move(str(plan.full_path), str(new_path))
 
     def do_execute_plan(self, plan: Plan) -> CanonicalResponse:
         assert plan is not None and plan.full_path is not None
         new_path = self.in_progress_folder.folder_path / plan.full_path.name
 
-        logger.debug(f"executing plan {plan.ulid}, moving {str(plan.full_path)} to {str(new_path)}")
+        logger.debug(f"executing plan {plan.ulid}, moving {plan.full_path!s} to {new_path!s}")
         shutil.move(str(plan.full_path), str(new_path))
 
         asyncio.create_task(self.controller.execute(plan))
@@ -390,7 +394,7 @@ class Planner:
                     filter_options=Config().get_thar_filters(),
                 )
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- API endpoint: any failure must come back as an envelope, not a 500
             return CanonicalResponse(errors=[f"{function_name()}: {e}"])
 
     def submit_plan(self, plan: Plan) -> CanonicalResponse:
@@ -416,10 +420,10 @@ class Planner:
             self.submitted_folder.refresh()
             try:
                 _do_scrape()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 -- scraping must not fail a plan that already saved
                 logger.warning(f"submit_plan: scrape failed: {e}")
             return CanonicalResponse_Ok
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- API endpoint: any failure must come back as an envelope, not a 500
             return CanonicalResponse(errors=[f"{function_name()}: {e}"])
 
     def start_planning(self):
