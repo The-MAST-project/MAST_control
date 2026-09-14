@@ -4,10 +4,10 @@ import os
 import signal
 import socket
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, Lock
-from typing import Annotated, Any, Literal, Set, Union
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import APIRouter, WebSocket
@@ -27,11 +27,11 @@ from common.models.assignments import AssignmentNotification
 from common.models.batches import Batch
 from common.models.statuses import (
     BaseStatus,
+    BasicUnitStatus,
     ControllerStatus,
     SitesStatus,
     SiteStatus,
     SpecStatus,
-    BasicUnitStatus,
 )
 from common.notifications import UiUpdateNotifications
 from common.spec import GratingNames, SpecInstruments
@@ -345,7 +345,7 @@ class CachedValue:
         if self.last_attempt is None:
             return True  # Never attempted
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         elapsed = now - self.last_attempt
         return elapsed > self.interval
 
@@ -354,7 +354,7 @@ class CachedValue:
         if self.last_success is None:
             return None
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return now - self.last_success
 
 
@@ -396,7 +396,7 @@ class Controller(Activities):
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(Controller, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
@@ -413,7 +413,7 @@ class Controller(Activities):
 
         self._terminated = False
 
-        self.activity_notification_clients: Set[WebSocket] = set()
+        self.activity_notification_clients: set[WebSocket] = set()
         self.hostname = socket.gethostname().split(".")[0]
 
         # The site this controller serves. This was a hostname match --
@@ -548,7 +548,8 @@ class Controller(Activities):
         self._initialized = True
 
     def operational_units(self, site_name: str | None) -> list[str]:
-        """Uses cached statuses to get a list of currently operational units for the given site_name (or preferred_site if None)"""
+        """Uses cached statuses to get a list of currently operational
+        units for the given site_name (or preferred_site if None)"""
         if site_name is None:
             site_name = self.preferred_site
         if site_name is None:
@@ -662,7 +663,7 @@ class Controller(Activities):
         api_type = type(cached_value.api).__name__  # "UnitApi", "SpecApi", "ControllerApi"
 
         try:
-            cached_value.last_attempt = datetime.now(timezone.utc)
+            cached_value.last_attempt = datetime.now(UTC)
             response = asyncio.run(
                 cached_value.api.get("controller_status" if isinstance(cached_value.api, ControllerApi) else "status")
             )
@@ -676,7 +677,7 @@ class Controller(Activities):
                     return BasicUnitStatus(detected=False, powered=False, operational=False)
                 else:
                     return BaseStatus(detected=False, operational=False)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- remote peer over asyncio/httpx: failure shape isn't ours to predict
             logger.error(f"Error fetching {api_type} status: {e}")
             if api_type == "UnitApi":
                 # For units, we want to return a short status even if the API call fails
@@ -706,10 +707,10 @@ class Controller(Activities):
 
         try:
             validated_status = expected_status_type.model_validate(data)
-        except Exception as e:
+        except (ValidationError, TypeError) as e:
             try:
                 validated_status = BaseStatus.model_validate(data)
-            except Exception as e2:
+            except (ValidationError, TypeError) as e2:
                 logger.error(f"Failed to validate status data for {type(api).__name__}: {e}; also failed BaseStatus: {e2}")
                 return BaseStatus(detected=False, operational=False)
 
@@ -730,12 +731,12 @@ class Controller(Activities):
             validated_status = self.status_from_dict(cached_value.api, status)
             with self.lock:
                 cached_value.value = validated_status
-                cached_value.last_success = datetime.now(timezone.utc)
+                cached_value.last_success = datetime.now(UTC)
                 cached_value.fetcher = None
                 logger.debug(
                     f"Updated cache for {site_name}:{component_name} ({api_type}) with '{type(cached_value.value).__name__}'"
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- future-result callback: must release cached_value.fetcher regardless of cause
             logger.error(f"Error updating cache for {site_name}:{component_name}: {e}")
             with self.lock:
                 cached_value.fetcher = None
@@ -836,7 +837,7 @@ class Controller(Activities):
 
         try:
             status = power_switch.status()
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 -- API endpoint: any driver failure must come back as an envelope, not a 500
             return CanonicalResponse(errors=[f"exception: {ex}"])
         return CanonicalResponse(value=status)
 
@@ -889,7 +890,7 @@ class Controller(Activities):
     async def notifications_endpoint(
         self,
         data: Annotated[
-            Union[UiUpdateNotifications, AssignmentNotification],
+            UiUpdateNotifications | AssignmentNotification,
             Field(discriminator="type"),
         ],
     ) -> CanonicalResponse:
@@ -952,7 +953,7 @@ class Controller(Activities):
                 logger.warning(f"{op}: symlink source '{src}' does not exist (link will dangle)")
             os.symlink(src, dst)
             logger.info(f"{op}: symlink '{src}' -> '{dst}'")
-        except Exception as e:
+        except OSError as e:
             logger.error(f"{op}: failed to symlink '{src}' -> '{dst}': {e}")
 
     async def _relay_to_django(self, data):
@@ -969,7 +970,7 @@ class Controller(Activities):
                     logger.warning(f"{op}: Django returned {response.status_code}: {response.text}")
         except httpx.RequestError as e:
             logger.error(f"{op}: failed to reach Django: {e}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 -- fire-and-forget relay: any other failure must not propagate
             logger.error(f"{op}: unexpected error: {e}")
 
     def endpoint_config_get_users(self):
@@ -1137,7 +1138,8 @@ class Controller(Activities):
         self.planner.add_routes(router)
 
         # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
-        # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)
+        # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], "
+        # f"endpoint=scheduler.units.{unit}.move_to_coordinates)
 
         # router.add_api_route(
         #     plans_base + "/execute_assigned_plan",
@@ -1150,7 +1152,8 @@ class Controller(Activities):
             endpoint=self.notifications_endpoint,
         )
         # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
-        # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], endpoint=scheduler.units.{unit}.move_to_coordinates)ned_plan,
+        # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], "
+        # f"endpoint=scheduler.units.{unit}.move_to_coordinates)
 
         # router.add_api_route(
         #     plans_base + "/execute_assigned_plan",   base_path + "/task_acquisition_path_notification",

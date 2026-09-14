@@ -10,8 +10,8 @@ A few plans carry intentional errors to test error handling.
 """
 
 # ── venv auto-loader ──────────────────────────────────────────────────────────
-import sys
 import os
+import sys
 from pathlib import Path
 
 _venv_dir = Path(__file__).resolve().parent.parent / ".venv"
@@ -21,6 +21,7 @@ if _venv_python.exists() and Path(sys.prefix) != _venv_dir:
 
 # ── imports ───────────────────────────────────────────────────────────────────
 import datetime
+
 import tomlkit
 import ulid as ulid_lib
 

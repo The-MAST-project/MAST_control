@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Self, cast
 
 from common.config import Config
@@ -11,6 +11,8 @@ from .controller import Controller
 from .planning import Plan, Planner, PlanState
 
 logger = get_logger(__name__)
+
+
 class Scheduler:
     _instance = None
     _initialized = False
@@ -37,7 +39,7 @@ class Scheduler:
             logger.error(f"{function_name()}: cannot determine preferred site for controller '{self.controller.hostname}'")
             return []
 
-        site = [s for s in self.sites_conf if s.name == preferred_site][0]
+        site = next((s for s in self.sites_conf if s.name == preferred_site), None)
         if not site:
             logger.error(f"{function_name()}: preferred site '{preferred_site}' not found in configuration")
             return []
@@ -46,14 +48,15 @@ class Scheduler:
             logger.error(f"{function_name()}: could not determine nearest observing window for site '{preferred_site}'")
             return []
 
-        now = datetime.now()
+        now = datetime.now(tz=UTC)
         assert nearest_observing_window.start is not None
         if now > nearest_observing_window.start:
             logger.info(f"{function_name()}: it's already past dusk at site '{preferred_site}', starting batch immediately")
             start_time = now
         else:
             logger.info(
-                f"{function_name()}: it's not yet dusk at site '{preferred_site}', starting batch at dusk ({nearest_observing_window.start})"
+                f"{function_name()}: it's not yet dusk at site '{preferred_site}', "
+                f"starting batch at dusk ({nearest_observing_window.start})"
             )
             start_time = nearest_observing_window.start
 
@@ -77,7 +80,7 @@ class Scheduler:
     def make_predicted_batches(self) -> list[Batch]:
         return []
 
-    def filter_by_time_window(self, evaluated_time_window: TimeWindow) -> Self:
+    def filter_by_time_window(self, candidates: list[Plan], evaluated_time_window: TimeWindow) -> Self:
         """
         Eliminate plans that cannot be executed within their specified time windows.
         :param plans: the list of plans to filter
@@ -92,7 +95,7 @@ class Scheduler:
             return self
 
         ret = []
-        for plan in self.plans:
+        for plan in candidates:
             if not plan.constraints or not plan.constraints.time_window:
                 ret.append(plan)
                 continue
@@ -109,7 +112,7 @@ class Scheduler:
 
         return self
 
-    def filter_by_visibility_and_airmass_from_site(self) -> Self:
+    def filter_by_visibility_and_airmass_from_site(self, candidates: list[Plan]) -> Self:
         """
         Eliminate plans that cannot be executed on the specified day due to visibility constraints.
         :param plans: the list of plans to filter
@@ -122,10 +125,10 @@ class Scheduler:
         - The plans are known to have been checked for schedulability on the specified day
         """
 
-        site = self.controller.preferred_site
+        # site = self.controller.preferred_site
         # TODO: per/target check for visibility and airmass constraints within the site's observing window
         ret: list[Plan] = []
-        for plan in [p for p in self.plans if p.target is not None]:
+        for plan in [p for p in candidates if p.target is not None]:
             target = plan.target
             if target.ra_hours is None or target.dec_degrees is None:
                 logger.warning(f"{function_name()}: Plan {plan.ulid}: bad target ({plan.target}), skipping visibility check")
