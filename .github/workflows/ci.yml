@@ -8,14 +8,14 @@
 # has CI either; MAST_common and MAST_unit both have real test suites, which is why
 # their workflows also run pytest.
 #
-# Lint is BLOCKING and, as of 2026-09-14, failing: `ruff check` reports 8 findings,
-# all pre-existing (`ruff format` itself is clean). That is deliberate, per the fleet
-# convention (see MAST_common's ci.yml) -- the debt is meant to show as red until it
-# is cleared, rather than sit in an advisory step nobody reads.
+# Lint is BLOCKING and, as of 2026-09-14, green: both `ruff format --check` and
+# `ruff check` pass. It started at 65 findings; the fixes are split across the
+# commits that introduced this workflow, so a red run means a real regression,
+# not debt showing through.
 #
-# The 18 blind-except (BLE001) findings that made up most of the original debt are
-# gone: 7 were genuinely narrowable (ValueError, OSError, pydantic.ValidationError)
-# and are now caught specifically; the other 11 are deliberate boundary catches --
+# The 18 blind-except (BLE001) findings that made up most of the original debt:
+# 7 were genuinely narrowable (ValueError, OSError, pydantic.ValidationError) and
+# are now caught specifically; the other 11 are deliberate boundary catches --
 # API-handler top levels, futures/callback completions, arbitrary transition
 # callables, parsing of untrusted files -- and carry a `# noqa: BLE001` with a
 # one-line reason instead of a guessed-at exception type.

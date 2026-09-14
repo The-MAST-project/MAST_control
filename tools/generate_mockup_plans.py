@@ -20,10 +20,12 @@ if _venv_python.exists() and Path(sys.prefix) != _venv_dir:
     os.execv(str(_venv_python), [str(_venv_python)] + sys.argv)
 
 # ── imports ───────────────────────────────────────────────────────────────────
-import datetime
+# Below the venv re-exec above by necessity: tomlkit and ulid are only guaranteed
+# to be installed in that venv, so importing them before the re-exec can fail.
+import datetime  # noqa: E402
 
-import tomlkit
-import ulid as ulid_lib
+import tomlkit  # noqa: E402
+import ulid as ulid_lib  # noqa: E402
 
 # ── target catalogue ──────────────────────────────────────────────────────────
 # (name, ra_hours, dec_degrees, magnitude, classification)
@@ -167,7 +169,7 @@ def exposure_params(magnitude: float, instrument: str) -> tuple[float, int]:
 
 
 def now_zulu() -> str:
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def make_plan_toml(
@@ -258,7 +260,7 @@ def main():
     # Intentional errors — indices into WD_TARGETS
     # hard errors (fail to load): indices 3 (bad_ra), 27 (missing_target)
     # soft errors (load OK, fail -valid): indices 10 (missing_spec), 35 (null_instrument)
-    ERROR_MAP = {
+    error_map = {
         3: "bad_ra",
         10: "missing_spec",
         27: "missing_target",
@@ -273,7 +275,7 @@ def main():
         exp_dur, n_exp = exposure_params(mag, instrument)
         merit = (i % 10) + 1
         lamp_on = i % 4 == 0  # every 4th plan has ThAr lamp
-        error_type = ERROR_MAP.get(i)
+        error_type = error_map.get(i)
         ulid_str = str(ulid_lib.ULID())
         filename = f"PLAN_{ulid_str}.toml"
         folder = submitted_dir if pool == "submitted" else pending_dir

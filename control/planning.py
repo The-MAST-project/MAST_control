@@ -56,7 +56,8 @@ class PlansFolder:
     - all the files named 'PLAN_...toml' in the folder are loaded into the provided list of plans
     - watchers are set up to handle:
       - file creation: the plan is loaded and added to the list
-      - file deletion: the folder is scanned to figure out which ULID was deleted.  the respective plan gets deleted from the list
+      - file deletion: the folder is scanned to figure out which ULID was deleted, and the
+        respective plan gets deleted from the list
       - file modification: we load the plan and update the respective element in the list (by ULID)
     """
 

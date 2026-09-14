@@ -3,7 +3,7 @@ import re
 import socket
 import zipfile
 from collections import OrderedDict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -59,7 +59,7 @@ class DataServer:
             # Otherwise return (1, name) so non-matching names sort after valid dates.
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", name):
                 try:
-                    dt = datetime.strptime(name, "%Y-%m-%d")
+                    dt = datetime.strptime(name, "%Y-%m-%d").replace(tzinfo=UTC)
                     return (0, dt.timestamp())
                 except ValueError:
                     # If parsing somehow fails, fall back to treating as non-date
