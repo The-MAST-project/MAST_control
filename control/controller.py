@@ -767,21 +767,22 @@ class Controller(Activities):
                             self.power_switches[site_name][unit_name].get_outlet_state("Computer") or False
                         )
 
-                spec_status = (
-                    site_cache["spec"].value
-                    if site_cache["spec"]
-                    else SpecStatus(
+                if site_cache["spec"]:
+                    spec_status = site_cache["spec"].value
+                    spec_status.powered = True
+                else:
+                    spec_status = SpecStatus(
                         detected=False,
                         operational=False,
                         why_not_operational=["No status available"],
                     )
-                )
 
                 try:
                     ret.sites[site_name] = SiteStatus(
                         controller=ControllerStatus(
                             detected=True,
                             operational=True,
+                            powered=True,
                         ),
                         spec=spec_status,
                         units=unit_statuses,
@@ -792,6 +793,7 @@ class Controller(Activities):
                         controller=ControllerStatus(
                             detected=True,
                             operational=True,
+                            powered=True,
                         ),
                         spec=SpecStatus(
                             detected=False,
@@ -811,6 +813,7 @@ class Controller(Activities):
             value=ControllerStatus(
                 detected=True,
                 operational=True,
+                powered=True,
             )
         )
 
