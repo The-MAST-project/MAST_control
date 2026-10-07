@@ -976,12 +976,6 @@ class Controller(Activities):
         except Exception as e:  # noqa: BLE001 -- fire-and-forget relay: any other failure must not propagate
             logger.error(f"{op}: unexpected error: {e}")
 
-    def endpoint_config_get_users(self):
-        return Config().get_users()
-
-    def endpoint_config_get_user(self, user_name: str):
-        return Config().get_user(user_name)
-
     def endpoint_config_get_unit(self, site_name: str, unit_name: str) -> CanonicalResponse:
         unit_config = Config().get_unit(site_name, unit_name)
         # logger.debug(f"{function_name}: {unit_name=}, {unit_config=}")
@@ -1076,16 +1070,6 @@ class Controller(Activities):
         router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
 
         tag = "Config"
-        router.add_api_route(
-            base_path + "/config/users",
-            tags=[tag],
-            endpoint=self.endpoint_config_get_users,
-        )
-        router.add_api_route(
-            base_path + "/config/user",
-            tags=[tag],
-            endpoint=self.endpoint_config_get_user,
-        )
         router.add_api_route(
             base_path + "/config/get_unit/{site_name}/{unit_name}",
             tags=[tag],
