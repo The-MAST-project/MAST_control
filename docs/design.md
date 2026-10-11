@@ -58,7 +58,7 @@ System context & configuration
   - Example sites: WIS (development) and NS (production). Unit naming supports short (e.g. '0','w') and long ('mast00','mastw') formats; short names are resolved to the local site's namespace.
   - Units are grouped by buildings/rows (affects UI grouping and physical placement but also can influence allocation policies).
 - Configuration DB:
-  - MongoDB is the canonical configuration and event store on the controller (collections: groups, services, sites, specs, units, users, events).
+  - MongoDB is the canonical configuration and event store on the controller (collections: services, sites, specs, units, events).
   - Units/specs use a common → specific merge pattern (read: merge common config with per-unit overrides; write: store only delta).
   - Scheduler reads unit deployment/maintenance state from this DB; "available resources" = deployed AND not in maintenance.
 
