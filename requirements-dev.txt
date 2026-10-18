@@ -4,3 +4,7 @@
 # ruff.toml controls the rules; this pin controls the tool version, because
 # ruff's formatter output can change between releases.
 ruff==0.16.0
+
+# The test suite (tests/). Pinned for the same reason as ruff: a CI failure should mean
+# this repo changed, not that the runner moved underneath it.
+pytest==9.1.1

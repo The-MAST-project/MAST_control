@@ -11,6 +11,23 @@ python app.py   # role + identity come from the bootstrap config file
                 # (/etc/wis/config.toml; set MAST_CONFIG to override for dev)
 ```
 
+## Tests
+
+```bash
+python -m pytest tests/ -q -ra   # from the repo root, in the venv that has mast.pth
+```
+
+- **No configuration database, ever.** `tests/conftest.py` points `MAST_CONFIG` at a missing
+  file, so an unfaked `Config()` raises `ConfigError`. This matters most on mast-ns-control
+  itself: its config DB is on loopback, which the network guard deliberately allows, so
+  without this a stray `Config()` would read, and `set_unit` would write, production.
+- **No network** off this machine except in tests marked `network` (`common.testing.network`).
+- **Don't construct `Controller()`.** Its `__init__` reads the config DB, builds a `Planner`
+  on disk, contacts power switches and starts the fetch timer, and it is a singleton.
+  `tests/fakes.py: bare_controller()` gives a `Controller` with just its state.
+- **Don't import `app.py`**: it builds `Config()` at import. Every module under `control/`
+  imports cleanly, and `test_imports.py` keeps it that way.
+
 ## Plan Execution (`control/planning.py`)
 
 Phases tracked as `AssignmentActivities` bitflags:
