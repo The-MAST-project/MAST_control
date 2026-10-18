@@ -1,12 +1,24 @@
 # Continuous integration for MAST_control.
 #
-# Lint only, for now: this repo has no test suite (no tests/ directory), and the
-# obvious substitute -- importing app.py -- instantiates Controller() at module
-# level, which needs a live MongoDB config DB. That is not something a runner can
-# fake without infrastructure this repo does not carry, so there is nothing to run
-# beyond static checks. Same situation as MAST_spec and MAST_gui, neither of which
-# has CI either; MAST_common and MAST_unit both have real test suites, which is why
-# their workflows also run pytest.
+# Tests and lint, as separate jobs so a red lint never hides whether the suite passed.
+#
+# The tests import control's modules, never app.py: app.py builds Config() at import,
+# which needs a live MongoDB config DB. Everything under control/ imports without one,
+# and tests/conftest.py points MAST_CONFIG at a missing file so that any Config() a test
+# did not fake fails loudly instead of finding a real one.
+#
+# The layout is MAST_unit's: `common` is a SIBLING clone, put on sys.path by the
+# mast.pth that MAST_provisioning writes into each machine's venv. So the test job
+# reproduces it -- two checkouts side by side, with the workspace root on PYTHONPATH:
+#
+#   <workspace>/
+#     common/    <- MAST_common: the branch of the SAME NAME if it exists, else master
+#     control/   <- this repo
+#
+# A change spanning both repos is developed on same-named branches, and CI then builds
+# the pair as a pair (MAST_unit#208 has the reasoning). Off such a branch, and on every
+# push to master, it builds against MAST_common master -- which is how control is
+# deployed, so a breaking change there turns this red without anything here moving.
 #
 # Lint is BLOCKING and, as of 2026-09-14, green: both `ruff format --check` and
 # `ruff check` pass. It started at 65 findings; the fixes are split across the
@@ -20,8 +32,8 @@
 # callables, parsing of untrusted files -- and carry a `# noqa: BLE001` with a
 # one-line reason instead of a guessed-at exception type.
 #
-# Runs on Linux because ruff is platform-independent and that is also control's
-# actual deployment platform (mast-ns-control).
+# Runs on Linux: that is control's actual deployment platform (mast-ns-control), and
+# ruff is platform-independent anyway.
 name: CI
 
 on:
@@ -34,6 +46,68 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test:
+    name: tests (ubuntu-latest)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out MAST_control
+        uses: actions/checkout@v7
+        with:
+          path: control
+
+      - name: Resolve the paired MAST_common branch
+        id: common-ref
+        shell: bash
+        env:
+          # head_ref on a pull_request, ref_name on a push.
+          PAIRED: ${{ github.head_ref || github.ref_name }}
+        run: |
+          remote=https://github.com/The-MAST-project/MAST_common.git
+          if [ -n "$PAIRED" ] && [ -n "$(git ls-remote --heads "$remote" "$PAIRED")" ]; then
+            echo "ref=$PAIRED" >> "$GITHUB_OUTPUT"
+            echo "MAST_common: building against the paired branch '$PAIRED'"
+          else
+            echo "ref=master" >> "$GITHUB_OUTPUT"
+            echo "MAST_common: no branch named '$PAIRED'; building against master"
+          fi
+
+      - name: Check out MAST_common as a sibling
+        uses: actions/checkout@v7
+        with:
+          repository: The-MAST-project/MAST_common
+          ref: ${{ steps.common-ref.outputs.ref }}
+          path: common
+
+      - uses: actions/setup-python@v7
+        with:
+          # ruff.toml sets target-version = "py312"; keep these in step.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            control/requirements.txt
+            control/requirements-dev.txt
+            common/requirements.txt
+
+      - name: Install dependencies
+        # control's pins win; common/requirements.txt is unpinned and adds only what
+        # `import common` needs beyond them (cachetools, humanfriendly, psutil, which
+        # control's requirements.txt does not list).
+        run: >-
+          python -m pip install --upgrade pip
+          -r control/requirements.txt
+          -r common/requirements.txt
+          -r control/requirements-dev.txt
+
+      - name: Tests
+        working-directory: control
+        env:
+          # Stands in for the mast.pth the provisioning writes into the venv.
+          PYTHONPATH: ${{ github.workspace }}
+        # tests/test_imports.py runs first and fails with the real ImportError if the
+        # environment is incomplete. -ra surfaces any skip, so none passes unnoticed.
+        run: python -m pytest tests/ -q -ra
+
   lint:
     name: lint
     runs-on: ubuntu-latest
