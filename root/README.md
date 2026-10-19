@@ -39,68 +39,11 @@ against what the host was actually running.
 
 ## Checking for drift
 
-```sh
-cd <checkout>/root/home/mast
-make check-deployed
-```
-
-Diffs every file this tree owns against its live counterpart and exits non-zero on any
-difference, so it works as a cron line or a CI step as readily as by hand. It reads only
-and **needs no root** — every tracked file is world-readable. Output is one line per
-file, `ok` / `DRIFTED` / `MISSING`, with a unified diff under each drifted one, read as
-`-` host, `+` repo.
-
-A `tolerated` line is a divergence that is known and deliberately not a failure. The
-Makefile's `TOLERATED` variable holds them, currently just
-`mast-control.service`, which is absent from `mast-ns-control`: whether the control
-service belongs on that host, and in what form, is its owner's call and not this repo's.
-It is printed on every run so it stays visible, and it does not turn the check red — a
-drift check that is always red is one nobody reads.
-
-Two things it does not do. It knows only the files listed in the Makefile's `DEPLOYED`
-variable, so a file added under `root/` without an entry there is invisible to it — add
-both together. And it reports; it never reconciles. A `DRIFTED` line is a question with
-two legitimate answers: deploy the repo, or bring the host's change back into the repo
-and review it like any other.
+How-to: [Control machine services — Check the host against the repo](https://github.com/The-MAST-project/MAST/wiki/Control-machine-services#check-the-host-against-the-repo)
 
 ## Deploying
 
-Both targets run **on the host**, as root, from a checkout there
-(`/home/mast/PycharmProjects/MAST_control`), from `root/home/mast/`. Nothing here
-reaches out over the network — there is no `ssh` or `scp` in the Makefile.
-
-```sh
-cd <checkout>/root/home/mast
-sudo make deploy-nginx        # vhost -> /etc/nginx/conf.d, nginx -t, reload
-sudo make deploy-prometheus   # promtool check, prometheus.yml -> /etc, SIGHUP
-```
-
-`deploy-nginx` refuses while `/etc/nginx/sites-enabled/default` exists. That stock
-Debian site claims `default_server` on port 80 and so does this vhost, and two of them
-is a startup error — nginx failing to start takes the control host's whole web surface
-with it. Remove the symlink and re-run:
-
-```sh
-rm /etc/nginx/sites-enabled/default
-```
-
-The live vhost is kept as `.bak` across the test and restored if `nginx -t` fails, so a
-bad config cannot survive the target that installed it. `.bak` is not matched by the
-`conf.d/*.conf` include, so the backup is inert.
-
-`deploy-prometheus` reloads with **SIGHUP**, not `systemctl reload`: the unit declares no
-`ExecReload` (`CanReload=no`), and prometheus runs without `--web.enable-lifecycle`, so
-`POST /-/reload` answers 403. SIGHUP costs no scrape gap. The config is checked with
-`promtool` *before* it is copied, so a bad file never reaches `/etc`.
-
-**`nginx -t` and `nginx -T` need root here** — the vhost reads
-`/etc/ssl/private/mast-ns-control.key`, which the `mast` account cannot open, so a
-non-root test reports a spurious `[emerg] cannot load certificate key`.
-
-`deploy-certs` installs certificates only. It used to copy the vhost as well, which made
-a config-only change impossible to ship through it: the target reads
-`/tmp/<host>.key`, a file that exists only just after `make-certs`, and died on the
-missing key before reaching the copy.
+How-to: [Control machine services — Deploy nginx or Prometheus config](https://github.com/The-MAST-project/MAST/wiki/Control-machine-services#deploy-nginx-or-prometheus-config)
 
 ## What is established, and what is not
 

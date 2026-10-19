@@ -1,4 +1,5 @@
 # vi: se terse nows sts=4 sw=4 ts=4:
+# How-to: https://github.com/The-MAST-project/MAST/wiki/Control-machine-services
 .PHONY: help deploy-control-services make-certs deploy-certs deploy-nginx deploy-prometheus check-deployed
 
 SRC        := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
