@@ -5,7 +5,7 @@ through the ``mast.pth`` the provisioning writes into the venv (in CI, ``PYTHONP
 stands in for it). The repo root goes on ``sys.path`` here, so ``import control`` works
 however pytest is started.
 
-Two guards, both installed at conftest IMPORT time, so they cover collection as well as
+Three guards, all installed at conftest IMPORT time, so they cover collection as well as
 the tests:
 
 1. **No configuration database.** This suite is run on mast-ns-control, which holds the
@@ -17,6 +17,10 @@ the tests:
 
 2. **No network**, except for tests marked ``network`` (``common.testing.network``):
    a unit, the spectrograph or a power switch is never contacted from here.
+
+3. **No real share.** Every ``Filer`` points at temporary folders, one per role
+   (``common.testing.filer``). On mast-ns-control a bare ``Filer()`` is the live
+   ``/Storage/mast-share/MAST`` -- every unit's products, the plans and the runs.
 """
 
 from __future__ import annotations
@@ -36,6 +40,10 @@ os.environ["MAST_CONFIG"] = str(Path(tempfile.mkdtemp(prefix="mast-control-tests
 from common.testing import network as _network  # noqa: E402 -- must follow the MAST_CONFIG override
 
 _network.install()
+
+from common.testing import filer as _filer_testing  # noqa: E402 -- before anything builds a Filer
+
+_filer_testing.isolate_filer(prefix="mast-control-tests-")
 pytest_configure = _network.pytest_configure
 pytest_collection_modifyitems = _network.pytest_collection_modifyitems
 _allow_network_for_marked_tests = _network.allow_network_for_marked_tests

@@ -930,10 +930,16 @@ class Controller(Activities):
         assert notification.initiator is not None
         assert notification.initiator.hostname is not None
         # `shared_top` is relative to the producer's shared root, so only this end can spell
-        # it: the producers' root is `Z:/MAST/<hostname>/` while ours is
-        # `/Storage/mast-share/MAST` with the host as the next component. Join it the same
-        # way DataServer addresses per-unit storage.
-        shared_root = Filer().shared.root
+        # it: the producers' root is `Z:/MAST/<hostname>/` while ours is the share itself,
+        # with the producer's host as the next component. Join it the same way DataServer
+        # addresses per-unit storage.
+        #
+        # `share_root`, not `shared`: `shared` is THIS machine's folder in the share on every
+        # platform once MAST_common makes it per-machine on Linux too
+        # (plans/filing-areas-design.md 3.1), and joining a unit's hostname under
+        # `.../MAST/mast-ns-control/` would leave every product link dangling. Today the
+        # two are the same path on Linux, so this changes nothing until that lands.
+        shared_root = Filer().share_root.root
         if os.path.isabs(notification.shared_top) or ":" in notification.shared_top:
             # Pre-MAST_spec#39 producer: an absolute path, usually a `D:/MAST/...` ram path
             # that is reaped once the products move and means nothing here anyway. Kept
