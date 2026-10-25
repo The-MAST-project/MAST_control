@@ -1,19 +1,33 @@
-# MAST Plan — minimal example
-# File name: PLAN_<ULID>.toml
+# =============================================================================
+# MAST plan -- the minimal example
+# =============================================================================
+# A plan file is named PLAN_<ULID>.toml; one submitted through MAST_control gets its ULID
+# there. Only what has no default is written here. Every other field, with its default and
+# what it allows, is in full-plan-example.toml.
+#
+# With no [spec_assignment], the units acquire the target and guide on it, and no spectrum is
+# taken: the same plan control generates for `start_acquisition`.
 
-owner  = "jdoe"
-merit  = 7        # 1–10
-
-# Unit specifiers ("mast01", "ns:1,3,5", "ns:10-17"), or "any". Never empty.
+# The units to observe with: unit specifiers, or the word "any".
+#   "mast01"      one unit, by name
+#   "ns:1,3,5"    units 1, 3 and 5 at site ns
+#   "ns:10-17"    a range of units at site ns
+#   "ns:north:2"  the 2nd unit of building north at site ns
+#   "any"         every unit deployed and not in maintenance
 requested_units = ["mast01", "mast03"]
 
+# What to observe, in J2000.
 [target]
-name        = "NGC 1275"
-ra_hours    = "03:19:48.16"   # sexagesimal or decimal hours
-dec_degrees = "+41:30:42.1"   # sexagesimal or decimal degrees
-# Or the name alone: it is resolved once, when the plan is submitted.
 
-# Optional: without it, the units acquire and guide, and no spectrum is taken.
-[spec_assignment]
-instrument                  = "highspec"
-requested_exposure_duration = 1800.0          # seconds, 0–3600; required with an instrument
+# Right ascension: sexagesimal hours "HH:MM:SS.s" (colon- or space-separated), or decimal
+# hours. 0 <= RA < 24.
+ra_hours = "03:19:48.16"
+
+# Declination: sexagesimal degrees "+DD:MM:SS.s" (colon- or space-separated), or decimal
+# degrees. -90 to +90.
+dec_degrees = "+41:30:42.1"
+
+# Or the target's name alone, in place of the two coordinates: it is resolved once, when the
+# plan is submitted (TNS, then SIMBAD/NED/VizieR through Sesame), and stored with the
+# coordinates it resolved to. With both coordinates given, the name is only a label.
+# name = "NGC 1275"

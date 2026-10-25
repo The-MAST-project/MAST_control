@@ -175,6 +175,8 @@ class PlanExecution:
         self.products: PlanProducts | None = None
         self.started_at = time.time()
         self.spec_started = False
+        #: Why the plan stopped for want of units, when it did (5.5).
+        self.quorum_lost: str | None = None
         self._terminated = threading.Event()
 
     # --- the plan's file ------------------------------------------------------------------
@@ -218,11 +220,21 @@ class PlanExecution:
                 workers.submit(self._worker, self.units[name])
             verdict = self._await_verdict()
             if verdict == "completed" and self._has_spectrograph():
-                self._spectrograph_phase()
+                verdict = self._spectrograph_phase() or verdict
                 if self.cancelled.is_set():
                     verdict = "aborted"
             if verdict == "failed":
-                self._abort_units([r for r in self.units.values() if r.state not in TERMINAL], "plan failed")
+                # Every unit still in the plan, guiding ones included: a plan that lost its
+                # quorum during the exposure leaves no unit guiding for nothing.
+                every = self.spec_started
+                runs = [r for r in self.units.values() if every or r.state not in TERMINAL]
+                failures = self._abort_units(runs, "plan failed", every=every)
+                if self.spec_started and self._spec_api is not None:
+                    response = self._call(self._spec_api().put("abort"))
+                    if not _get(response, "succeeded", False):
+                        failures.append(f"spec: abort failed: {_get(response, 'errors')}")
+                if failures:
+                    self.event("abort-failures", failures)
             # Workers still running at success keep running until now (5.5): the plan ends here.
             self._stop.set()
             with self._changed:
@@ -239,6 +251,8 @@ class PlanExecution:
                     return "completed"
                 failed = self.count(UnitRunState.FAILED) + self.count(UnitRunState.ABORTED)
                 if failed > n - self.quorum:
+                    # Fewer units left in the plan than it needs to continue (5.5).
+                    self.quorum_lost = f"quorum {self.quorum} lost: {n - failed} of {n} units left"
                     return "failed"
                 self._changed.wait(timeout=self.timing.poll_seconds)
 
@@ -250,7 +264,8 @@ class PlanExecution:
         guiding = [r.name for r in self.units.values() if r.state is UnitRunState.GUIDING]
         failed = [r.name for r in self.units.values() if r.state in (UnitRunState.FAILED, UnitRunState.ABORTED)]
         verb = "quorum reached" if len(guiding) >= self.quorum else "quorum not reached"
-        details = [f"{verb}: {len(guiding)} of {len(self.units)} guiding ({', '.join(guiding) or 'none'})"]
+        details = [self.quorum_lost] if self.quorum_lost else []
+        details.append(f"{verb}: {len(guiding)} of {len(self.units)} guiding ({', '.join(guiding) or 'none'})")
         if failed:
             details.append(f"failed: {', '.join(failed)}")
         return details
@@ -481,7 +496,11 @@ class PlanExecution:
 
     # --- the spectrograph (5.7) -----------------------------------------------------------
 
-    def _spectrograph_phase(self) -> None:
+    def _spectrograph_phase(self) -> Outcome | None:
+        """Expose the spectrograph, while the quorum holds (5.7). Returns "failed" when it does
+        not: a guiding unit drops out -- its guider no longer engaged (a lost star it is still
+        looking for does not count), or unreachable for `unreachable_seconds` -- and fewer than
+        `quorum` remain. The exposure is then aborted with the plan."""
         from common.models.assignments import Initiator, SpectrographAssignment
 
         assert self._spec_api is not None and self.plan.spec_assignment is not None
@@ -490,7 +509,7 @@ class PlanExecution:
         if not _get(status, "operational", False) or _get(status, "activities", 0) != 0:
             self.errors.append("spectrograph: not operational, or not idle")
             self.event("spec-unavailable", self.errors[-1:])
-            return
+            return "failed"
         assignment = SpectrographAssignment(
             instrument=self.plan.spec_assignment.instrument,
             initiator=Initiator.local_machine(),
@@ -501,17 +520,32 @@ class PlanExecution:
         if not _get(response, "succeeded", False):
             self.errors.append(f"spectrograph refused: {_get(response, 'errors')}")
             self.event("spec-refused", self.errors[-1:])
-            return
+            return "failed"
         self.spec_started = True
         self.event("exposing", [str(self.plan.spec_assignment.instrument)])
-        stopped_guiding: set[str] = set()
+        unreachable_since: dict[str, float] = {}
         while not self.cancelled.wait(self.timing.spec_poll_seconds):
-            status = _get(self._call(spec.get("status")), "value")
             for name, run in self.units.items():
-                if run.state is UnitRunState.GUIDING and name not in stopped_guiding:
-                    unit = _get(self._call(self._unit_api(name).get("status")), "value")
-                    if unit is not None and not _get(unit, "guiding", False):
-                        stopped_guiding.add(name)
-                        self.event("unit-stopped-guiding", [name])
+                if run.state is not UnitRunState.GUIDING:
+                    continue
+                response = self._call(self._unit_api(name).get("status"))
+                if _get(response, "succeeded", False):
+                    unreachable_since.pop(name, None)
+                    if "Guiding" in (_get(_get(response, "value"), "activities_verbal") or []):
+                        continue
+                    why = "guiding: stopped during the exposure"
+                else:
+                    first = unreachable_since.setdefault(name, time.monotonic())
+                    if time.monotonic() - first < self.timing.unreachable_seconds:
+                        continue
+                    why = f"status: unreachable for {self.timing.unreachable_seconds:g} s during the exposure"
+                self.event("unit-stopped-guiding", [name])
+                self._set(run, UnitRunState.FAILED, [why])
+            guiding = self.count(UnitRunState.GUIDING)
+            if guiding < self.quorum:
+                self.quorum_lost = f"quorum {self.quorum} lost during the exposure: {guiding} of {len(self.units)} guiding"
+                return "failed"
+            status = _get(self._call(spec.get("status")), "value")
             if status is not None and _get(status, "activities", 0) == 0:
-                return
+                return None
+        return None

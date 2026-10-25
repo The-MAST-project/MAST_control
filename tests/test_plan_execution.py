@@ -344,3 +344,94 @@ def test_the_products_folder_links_relatively(site, plans):
     execution = make(plans, site, {"mast01": FakeUnit([READY, LOCKED])})
     execution.run()
     assert Path(execution.products.root).is_dir()
+
+
+class FakeSpec:
+    """The spectrograph: busy for `exposing` status reads after its assignment, then idle."""
+
+    def __init__(self, exposing=3):
+        self.exposing = exposing
+        self.puts: list[str] = []
+        self.started = False
+
+    async def get(self, method, params=None, timeout=None):
+        if self.started and self.exposing > 0:
+            self.exposing -= 1
+            return {"succeeded": True, "value": {"operational": True, "activities": 4}}
+        return {"succeeded": True, "value": {"operational": True, "activities": 0}}
+
+    async def put(self, method, params=None, json=None, timeout=None):
+        self.puts.append(method)
+        self.started = self.started or method == "execute_assignment"
+        return {"succeeded": True, "value": "ok"}
+
+
+ENGAGED_UNLOCKED = status(acquisition=outcome("guiding"), activities=["Guiding"], guiding=False)  # LostLock
+STOPPED = status(acquisition=outcome("ended"), activities=[], guiding=False)
+
+
+class TestTheQuorumHolds:
+    """`quorum` is the fewest units to continue: below it, the plan stops (5.5)."""
+
+    @pytest.fixture(autouse=True)
+    def initiator(self, monkeypatch):
+        from common.models.assignments import Initiator
+
+        monkeypatch.setattr(
+            Initiator,
+            "local_machine",
+            classmethod(lambda cls: cls.model_construct(hostname="ctl", fqdn="ctl.x", ipaddr=None)),
+        )
+
+    def spectrograph(self):
+        return {"instrument": "highspec", "requested_exposure_duration": 60}
+
+    def test_losing_units_before_guiding_says_so(self, site, plans):
+        broken = status(operational=False, why_not=["mount: not connected"])
+        units = {"mast01": FakeUnit([broken]), "mast02": FakeUnit([broken]), "mast03": FakeUnit([READY, RUNNING])}
+        execution = make(plans, site, units, quorum=2)
+        execution.run()
+        assert events(execution)[-1][1][0] == "quorum 2 lost: 1 of 3 units left"
+
+    def test_the_exposure_completes_while_the_quorum_holds(self, site, plans):
+        spec = FakeSpec()
+        units = {"mast01": FakeUnit([READY, LOCKED]), "mast02": FakeUnit([READY, LOCKED])}
+        execution = make(plans, site, units, spec_api=lambda: spec, spec_assignment=self.spectrograph())
+        assert execution.run() == "completed"
+        assert spec.puts == ["execute_assignment"]
+        assert "exposing" in what(execution)
+
+    def test_a_lost_star_still_being_sought_does_not_drop_a_unit(self, site, plans):
+        spec = FakeSpec()
+        units = {"mast01": FakeUnit([READY, LOCKED, ENGAGED_UNLOCKED]), "mast02": FakeUnit([READY, LOCKED])}
+        execution = make(plans, site, units, spec_api=lambda: spec, spec_assignment=self.spectrograph())
+        assert execution.run() == "completed"
+
+    def test_a_unit_that_stops_guiding_below_the_quorum_aborts_the_plan(self, site, plans):
+        spec = FakeSpec(exposing=100)
+        dropping = FakeUnit([READY, LOCKED, LOCKED, STOPPED])
+        steady = FakeUnit([READY, LOCKED])
+        execution = make(
+            plans, site, {"mast01": dropping, "mast02": steady}, spec_api=lambda: spec, spec_assignment=self.spectrograph()
+        )
+
+        assert execution.run() == "failed"
+        assert spec.puts == ["execute_assignment", "abort"], "the exposure is aborted with the plan"
+        assert "abort" in steady.put_methods(), "the units still guiding are stopped too"
+        assert ("unit-stopped-guiding", ["mast01"]) in events(execution)
+        assert execution.units["mast01"].errors == ["guiding: stopped during the exposure"]
+        assert events(execution)[-1][1][0] == "quorum 2 lost during the exposure: 1 of 2 guiding"
+
+    def test_above_the_quorum_one_unit_may_drop(self, site, plans):
+        # mast01's status is read by the exposure loop alone once it guides: it drops only
+        # after 20 polls, by when mast03, which may join after the quorum, guides too.
+        spec = FakeSpec(exposing=40)
+        units = {
+            "mast01": FakeUnit([READY, LOCKED, *[LOCKED] * 20, STOPPED]),
+            "mast02": FakeUnit([READY, LOCKED]),
+            "mast03": FakeUnit([READY, LOCKED]),
+        }
+        execution = make(plans, site, units, quorum=2, spec_api=lambda: spec, spec_assignment=self.spectrograph())
+        assert execution.run() == "completed"
+        assert spec.puts == ["execute_assignment"]
+        assert execution.units["mast01"].state is UnitRunState.FAILED
