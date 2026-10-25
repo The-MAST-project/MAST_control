@@ -51,11 +51,11 @@ def test_the_exposure_series_moves_repeats_included(tmp_path):
         "max_exposure_duration": 900.0,
         "repeats": {"every": "Once per night", "nights": 3},
     }
-    path = write(tmp_path, {"requested_units": "any", "target": target, "spec_assignment": {"instrument": "highspec"}})
+    path = write(tmp_path, {"requested_units": "any", "target": target, "spec": {"instrument": "highspec"}})
     tool.rewrite_file(path, dry_run=False, resolve=no_network)
     doc = tomlkit.parse(path.read_text()).unwrap()
-    assert doc["spec_assignment"]["requested_exposure_duration"] == 2700.0
-    assert doc["spec_assignment"]["repeats"] == {"every": "Once per night", "nights": 3}
+    assert doc["spec"]["requested_exposure_duration"] == 2700.0
+    assert doc["spec"]["repeats"] == {"every": "Once per night", "nights": 3}
     assert "repeats" not in doc["target"] and "max_exposure_duration" not in doc["target"]
 
 
@@ -63,7 +63,7 @@ def test_exposure_fields_without_a_spectrograph_are_left_alone(tmp_path):
     path = write(tmp_path, {"requested_units": "any", "target": {**TARGET, "requested_exposure_duration": 60.0}})
     before = path.read_text()
     result = tool.rewrite_file(path, dry_run=False, resolve=no_network)
-    assert "no [spec_assignment]" in result.problem and path.read_text() == before
+    assert "no [spec]" in result.problem and path.read_text() == before
 
 
 def test_a_name_without_coordinates_is_resolved_and_recorded(tmp_path):
@@ -100,3 +100,17 @@ def test_main_reports_and_exits(tmp_path, ok, capsys):
     write(tmp_path, {"required_units": 1, "target": TARGET})
     assert tool.main([str(tmp_path), "--dry-run"]) == 0
     assert "WOULD WRITE" in capsys.readouterr().out
+
+
+def test_spec_assignment_is_spec(tmp_path):
+    path = write(
+        tmp_path,
+        {
+            "requested_units": "any",
+            "target": TARGET,
+            "spec_assignment": {"instrument": "highspec", "requested_exposure_duration": 60.0},
+        },
+    )
+    tool.rewrite_file(path, dry_run=False, resolve=no_network)
+    doc = tomlkit.parse(path.read_text()).unwrap()
+    assert "spec_assignment" not in doc and doc["spec"]["instrument"] == "highspec"

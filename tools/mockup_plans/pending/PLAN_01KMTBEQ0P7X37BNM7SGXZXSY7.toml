@@ -15,16 +15,16 @@ magnitude = 17.1
 classification = "Flash Spectroscopy"
 case = "Rapid spectroscopic follow-up triggered by LAST/ULTRASAT alert within hours of explosion. HighSpec classification of circumstellar material via flash ionization lines before the early CSM signatures fade."
 
-[spec_assignment]
-instrument = "highspec"
-requested_exposure_duration = 3600.0
-requested_number_of_exposures = 3
-
-[spec_assignment.calibration]
-lamp_on = true
-filter = "ND3000"
-
 [[events]]
 what = "approved"
 detail = "mockup"
 when = "2026-03-28T13:52:05Z"
+
+[spec]
+instrument = "highspec"
+requested_exposure_duration = 3600.0
+requested_number_of_exposures = 3
+
+[spec.calibration]
+lamp_on = true
+filter = "ND3000"

@@ -15,12 +15,12 @@ magnitude = 14.5
 classification = "Variable Star"
 case = "Time-series spectroscopy of pulsating WD to characterize g-mode oscillation spectrum. Repeated short exposures to build phase-resolved spectral time series."
 
-[spec_assignment]
-instrument = "highspec"
-requested_exposure_duration = 1800.0
-requested_number_of_exposures = 2
-
 [[events]]
 what = "approved"
 detail = "mockup"
 when = "2026-03-28T13:52:05Z"
+
+[spec]
+instrument = "highspec"
+requested_exposure_duration = 1800.0
+requested_number_of_exposures = 2

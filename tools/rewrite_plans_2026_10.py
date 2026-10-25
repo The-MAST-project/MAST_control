@@ -10,6 +10,7 @@ Run once on mast-ns-control, before control starts on the new model:
 For every `PLAN_*.toml` under the given folders (default: every state folder of the plans
 folder):
 
+- `[spec_assignment]` is renamed `[spec]`;
 - `required_units` is dropped; `allocated_units` is renamed `scheduled_units`, value kept;
 - an empty or missing `requested_units` becomes `"any"`; a `quorum` above an explicit list
   is reported and the file left alone;
@@ -17,7 +18,7 @@ folder):
   in and a `resolved` event appended (needs the network); a name that does not resolve is
   reported and the file left alone;
 - the exposure series -- `requested_exposure_duration`, `requested_number_of_exposures`,
-  `max_exposure_duration`, `[target.repeats]` -- moves into `[spec_assignment]`; a plan with
+  `max_exposure_duration`, `[target.repeats]` -- moves into `[spec]`; a plan with
   none and any of them set is reported and left alone;
 - the run-time keys the old model wrote (`run_folder`, `timings`, ...) are dropped.
 
@@ -65,6 +66,11 @@ def rewrite(doc: dict, resolve=resolve_target) -> tuple[dict, list[str]]:
     changes: list[str] = []
     doc = dict(doc)
 
+    if "spec_assignment" in doc:
+        if "spec" in doc:
+            raise ValueError("both [spec_assignment] and [spec]")
+        doc["spec"] = doc.pop("spec_assignment")
+        changes.append("[spec_assignment] -> [spec]")
     if "required_units" in doc:
         doc.pop("required_units")
         changes.append("dropped required_units")
@@ -89,11 +95,11 @@ def rewrite(doc: dict, resolve=resolve_target) -> tuple[dict, list[str]]:
     target = dict(doc.get("target") or {})
     moving = {k: target.pop(k) for k in EXPOSURE_FIELDS if k in target}
     if moving:
-        spec = doc.get("spec_assignment")
+        spec = doc.get("spec")
         if spec is None:
-            raise ValueError(f"exposure fields {sorted(moving)} but no [spec_assignment] for them to describe")
-        doc["spec_assignment"] = {**dict(spec), **moving}
-        changes.append(f"moved {', '.join(sorted(moving))} into spec_assignment")
+            raise ValueError(f"exposure fields {sorted(moving)} but no [spec] for them to describe")
+        doc["spec"] = {**dict(spec), **moving}
+        changes.append(f"moved {', '.join(sorted(moving))} into spec")
 
     if target.get("name") and not _usable_coordinates(target):
         try:

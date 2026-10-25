@@ -15,12 +15,12 @@ magnitude = 18.5
 classification = "ULTRASAT Follow-Up"
 case = "Ground-based spectroscopic follow-up of ULTRASAT UV transient alert. DeepSpec classification to determine transient type and redshift."
 
-[spec_assignment]
-instrument = "deepspec"
-requested_exposure_duration = 2400.0
-requested_number_of_exposures = 5
-
 [[events]]
 what = "approved"
 detail = "mockup"
 when = "2026-03-28T13:52:05Z"
+
+[spec]
+instrument = "deepspec"
+requested_exposure_duration = 2400.0
+requested_number_of_exposures = 5

@@ -216,7 +216,7 @@ def make_plan_toml(
 
         doc.add("target", target)
 
-    # ── spec_assignment ───────────────────────────────────────────────────────
+    # ── spec ───────────────────────────────────────────────────────
     if error_type != "missing_spec":
         spec = tomlkit.table()
         if error_type == "null_instrument":
@@ -233,7 +233,7 @@ def make_plan_toml(
             cal.add("filter", "ND3000")
             spec.add("calibration", cal)
 
-        doc.add("spec_assignment", spec)
+        doc.add("spec", spec)
 
     # ── events (pending: approved) ────────────────────────────────────────────
     if pool == "pending":

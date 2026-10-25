@@ -15,12 +15,12 @@ magnitude = 15.7
 classification = "WD Pollution"
 case = "Spectroscopic monitoring to characterize accreted planetary material. DeepSpec's 380-850nm bandpass enables simultaneous detection of Ca, Mg, Fe and Si absorption features from tidally disrupted planetesimals."
 
-[spec_assignment]
-instrument = "deepspec"
-requested_exposure_duration = 1800.0
-requested_number_of_exposures = 3
-
 [[events]]
 what = "approved"
 detail = "mockup"
 when = "2026-03-28T13:52:05Z"
+
+[spec]
+instrument = "deepspec"
+requested_exposure_duration = 1800.0
+requested_number_of_exposures = 3

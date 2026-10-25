@@ -14,7 +14,7 @@ magnitude = 14.5
 classification = "WD Binary RV"
 case = "Radial velocity monitoring campaign to determine orbital parameters. HighSpec R~20,000 at Ca II H&K lines provides ~15 km/s precision, sufficient to characterize compact binary orbits."
 
-[spec_assignment]
+[spec]
 instrument = "highspec"
 requested_exposure_duration = 1800.0
 requested_number_of_exposures = 2

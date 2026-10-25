@@ -257,7 +257,7 @@ class PlanExecution:
                 self._changed.wait(timeout=self.timing.poll_seconds)
 
     def _has_spectrograph(self) -> bool:
-        spec = self.plan.spec_assignment
+        spec = self.plan.spec
         return spec is not None and spec.instrument is not None and self._spec_api is not None
 
     def _summary(self) -> list[str]:
@@ -503,7 +503,7 @@ class PlanExecution:
         `quorum` remain. The exposure is then aborted with the plan."""
         from common.models.assignments import Initiator, SpectrographAssignment
 
-        assert self._spec_api is not None and self.plan.spec_assignment is not None
+        assert self._spec_api is not None and self.plan.spec is not None
         spec = self._spec_api()
         status = _get(self._call(spec.get("status")), "value")
         if not _get(status, "operational", False) or _get(status, "activities", 0) != 0:
@@ -511,10 +511,10 @@ class PlanExecution:
             self.event("spec-unavailable", self.errors[-1:])
             return "failed"
         assignment = SpectrographAssignment(
-            instrument=self.plan.spec_assignment.instrument,
+            instrument=self.plan.spec.instrument,
             initiator=Initiator.local_machine(),
             plan=self.plan,
-            spec=self.plan.spec_assignment,
+            spec=self.plan.spec,
         )
         response = self._call(spec.put("execute_assignment", json=assignment.model_dump(mode="json")))
         if not _get(response, "succeeded", False):
@@ -522,7 +522,7 @@ class PlanExecution:
             self.event("spec-refused", self.errors[-1:])
             return "failed"
         self.spec_started = True
-        self.event("exposing", [str(self.plan.spec_assignment.instrument)])
+        self.event("exposing", [str(self.plan.spec.instrument)])
         unreachable_since: dict[str, float] = {}
         while not self.cancelled.wait(self.timing.spec_poll_seconds):
             for name, run in self.units.items():

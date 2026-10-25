@@ -44,7 +44,7 @@ STATUS_TIMEOUT_SECONDS = 5.0
 
 
 def _has_spectrograph(execution: PlanExecution) -> bool:
-    spec = execution.plan.spec_assignment
+    spec = execution.plan.spec
     return spec is not None and spec.instrument is not None
 
 

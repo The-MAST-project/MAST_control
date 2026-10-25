@@ -396,7 +396,7 @@ class TestTheQuorumHolds:
     def test_the_exposure_completes_while_the_quorum_holds(self, site, plans):
         spec = FakeSpec()
         units = {"mast01": FakeUnit([READY, LOCKED]), "mast02": FakeUnit([READY, LOCKED])}
-        execution = make(plans, site, units, spec_api=lambda: spec, spec_assignment=self.spectrograph())
+        execution = make(plans, site, units, spec_api=lambda: spec, spec=self.spectrograph())
         assert execution.run() == "completed"
         assert spec.puts == ["execute_assignment"]
         assert "exposing" in what(execution)
@@ -404,7 +404,7 @@ class TestTheQuorumHolds:
     def test_a_lost_star_still_being_sought_does_not_drop_a_unit(self, site, plans):
         spec = FakeSpec()
         units = {"mast01": FakeUnit([READY, LOCKED, ENGAGED_UNLOCKED]), "mast02": FakeUnit([READY, LOCKED])}
-        execution = make(plans, site, units, spec_api=lambda: spec, spec_assignment=self.spectrograph())
+        execution = make(plans, site, units, spec_api=lambda: spec, spec=self.spectrograph())
         assert execution.run() == "completed"
 
     def test_a_unit_that_stops_guiding_below_the_quorum_aborts_the_plan(self, site, plans):
@@ -412,7 +412,7 @@ class TestTheQuorumHolds:
         dropping = FakeUnit([READY, LOCKED, LOCKED, STOPPED])
         steady = FakeUnit([READY, LOCKED])
         execution = make(
-            plans, site, {"mast01": dropping, "mast02": steady}, spec_api=lambda: spec, spec_assignment=self.spectrograph()
+            plans, site, {"mast01": dropping, "mast02": steady}, spec_api=lambda: spec, spec=self.spectrograph()
         )
 
         assert execution.run() == "failed"
@@ -431,7 +431,7 @@ class TestTheQuorumHolds:
             "mast02": FakeUnit([READY, LOCKED]),
             "mast03": FakeUnit([READY, LOCKED]),
         }
-        execution = make(plans, site, units, quorum=2, spec_api=lambda: spec, spec_assignment=self.spectrograph())
+        execution = make(plans, site, units, quorum=2, spec_api=lambda: spec, spec=self.spectrograph())
         assert execution.run() == "completed"
         assert spec.puts == ["execute_assignment"]
         assert execution.units["mast01"].state is UnitRunState.FAILED

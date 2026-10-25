@@ -76,7 +76,7 @@ SEARCHABLE_FIELDS = [
     ("target.magnitude", "Magnitude", "number"),
     ("target.science.case", "Science case", "text"),
     ("target.science.classification", "Classification", "text"),
-    ("spec_assignment.instrument", "Instrument", "exact"),
+    ("spec.instrument", "Instrument", "exact"),
     ("owner.name", "Owner display name", "text"),
     ("owner.uuid", "Owner UUID", "exact"),
 ]
@@ -206,7 +206,7 @@ def is_plan_valid(plan: Plan) -> bool:
         return False
     if plan.target.ra_hours is None or plan.target.dec_degrees is None:
         return False
-    if plan.spec_assignment is None or plan.spec_assignment.instrument is None:
+    if plan.spec is None or plan.spec.instrument is None:
         return False
     return True
 
@@ -566,7 +566,7 @@ Value predicates (case-insensitive substring unless noted):
   -target.magnitude <value>
   -target.science.case <value>
   -target.science.classification <value>
-  -spec_assignment.instrument <value>    (exact match)
+  -spec.instrument <value>    (exact match)
   -owner.name <value>                    (display name, substring)
   -owner.uuid <value>                    (exact match)
 

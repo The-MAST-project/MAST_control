@@ -5,8 +5,9 @@
 # there. Only what has no default is written here. Every other field, with its default and
 # what it allows, is in full-plan-example.toml.
 #
-# With no [spec_assignment], the units acquire the target and guide on it, and no spectrum is
-# taken: the same plan control generates for `start_acquisition`.
+# With no spectrograph `instrument` -- as here, with no [spec] at all -- the plan only
+# acquires: the units acquire the target and guide on it, and no spectrum is taken. That is
+# the plan control generates for `start_acquisition`.
 
 # The units to observe with: unit specifiers, or the word "any".
 #   "mast01"      one unit, by name

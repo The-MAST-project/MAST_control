@@ -52,8 +52,8 @@ def test_the_full_example_with_everything_uncommented_is_valid():
     doc = tomlkit.parse(text).unwrap()
     plan = Plan(**doc)
 
-    assert plan.spec_assignment.requested_exposure_duration == 1800.0
-    assert plan.spec_assignment.settings.disperser == "Halpha"
+    assert plan.spec.requested_exposure_duration == 1800.0
+    assert plan.spec.settings.disperser == "Halpha"
     assert plan.constraints.time_window.end_after_nights == 7
     assert set(doc) - {"events"} <= set(Plan.model_fields), "every field it shows is the model's"
 

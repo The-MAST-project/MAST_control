@@ -145,7 +145,7 @@ class NewPlanTemplate(BaseModel):
     requested_units: list[str] = []
     target: dict = Field(default_factory=lambda: {"ra_hours": None, "dec_degrees": None})
     # The exposure series is the spectrograph's (plans/control_acquisition_design.md 3.2).
-    spec_assignment: dict = Field(
+    spec: dict = Field(
         default_factory=lambda: {
             **SpectrographModel().model_dump(),
             "requested_exposure_duration": None,

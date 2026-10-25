@@ -93,12 +93,16 @@ dec_degrees = "+41:30:42.1"
 
 
 # --- The spectrograph ------------------------------------------------------------
-# Leave the whole table out for no spectrum: the units acquire and guide on the target, and
-# the plan completes once `quorum` units are guiding.
+# A plan with no spectrograph `instrument` -- this table left out, or written without one --
+# only acquires: the units acquire the target and guide on it, no spectrum is taken, and the
+# plan completes once `quorum` units are guiding. That is the plan control generates for
+# `start_acquisition`. With an `instrument`, the spectrograph exposes once `quorum` units are
+# guiding, and the plan completes when the exposure series does.
 
-# [spec_assignment]
+# [spec]
 
-# Which spectrograph. "highspec" | "deepspec".
+# Which spectrograph: "highspec" | "deepspec". None, the default: no spectrum, the plan only
+# acquires.
 # instrument = "highspec"
 
 # Seconds per exposure. Required with an `instrument`. 0 < seconds <= 3600.
@@ -112,7 +116,7 @@ dec_degrees = "+41:30:42.1"
 # max_exposure_duration = 600.0
 
 # Calibration: the ThAr lamp.
-# [spec_assignment.calibration]
+# [spec.calibration]
 
 # Light the ThAr lamp during the exposure. true | false.
 # lamp_on = false
@@ -122,7 +126,7 @@ dec_degrees = "+41:30:42.1"
 # filter = "ND3000"
 
 # When the exposure series is scheduled again.
-# [spec_assignment.repeats]
+# [spec.repeats]
 
 # How often per night. "Only once" | "Once per night" | "Twice per night" | "As much as possible".
 # every = "Only once"
@@ -132,13 +136,13 @@ dec_degrees = "+41:30:42.1"
 
 # The instrument's own settings. Not shown in the web interface; leave them out unless the
 # instrument's engineer says otherwise. For deepspec, `camera` is a table per band.
-# [spec_assignment.settings]
+# [spec.settings]
 
 # Highspec's disperser. Required in these settings. "Ca" | "Mg" | "Halpha" | "Empty".
 # disperser = "Halpha"
 
 # Highspec's camera (Newton).
-# [spec_assignment.settings.camera]
+# [spec.settings.camera]
 
 # Seconds per frame.
 # exposure_duration = 5.0
@@ -165,12 +169,12 @@ dec_degrees = "+41:30:42.1"
 # camera_enabled = true
 
 # Binning. Each >= 1.
-# [spec_assignment.settings.camera.binning]
+# [spec.settings.camera.binning]
 # x = 1
 # y = 1
 
 # Cooling, in degrees C.
-# [spec_assignment.settings.camera.temperature]
+# [spec.settings.camera.temperature]
 # regular_set_point = -10
 # science_set_point = -85
 # cooler_mode = 0

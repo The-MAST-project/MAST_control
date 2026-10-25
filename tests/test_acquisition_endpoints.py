@@ -52,7 +52,7 @@ class FakeUnit:
 
 class FakeExecution:
     def __init__(self, spec=None):
-        self.plan = SimpleNamespace(ulid="01OLD", spec_assignment=spec)
+        self.plan = SimpleNamespace(ulid="01OLD", spec=spec)
         self.aborted = False
 
     def abort(self):
@@ -90,7 +90,7 @@ class TestGenerate:
         plan = acquisitions(controller).generate(["mast01", "mast03"], "12:30:45", "+20:15:00", None, True, None)
         assert plan.requested_units == ["mast01", "mast03"] and plan.quorum == 2
         assert plan.autofocus and plan.approved and not plan.production and plan.owner == "mast"
-        assert plan.spec_assignment is None
+        assert plan.spec is None
         assert (plan.target.ra_hours, plan.target.dec_degrees) == (pytest.approx(12.5125), pytest.approx(20.25))
         assert [e.what for e in plan.events] == ["generated"]
         assert plan.events[0].details == ["start_acquisition", "ra=12:30:45", "dec=+20:15:00", "object=None"]
