@@ -2,16 +2,14 @@ ulid = "01KMTBEQ0RVJ9N2EC7GQXE15BV"
 owner = "mockup.scientist"
 mockup = true
 merit = 7
-required_units = 1
 approved = true
+requested_units = "any"
 
 [target]
 ra_hours = 15.141
 dec_degrees = 23.728
 name = "GW Lib"
 magnitude = 18.0
-requested_exposure_duration = 3600.0
-requested_number_of_exposures = 3
 
 [target.science]
 classification = "Cataclysmic Variable"
@@ -19,6 +17,8 @@ case = "Spectroscopic monitoring of accreting WD system. HighSpec resolves the d
 
 [spec_assignment]
 instrument = "highspec"
+requested_exposure_duration = 3600.0
+requested_number_of_exposures = 3
 
 [spec_assignment.calibration]
 lamp_on = true

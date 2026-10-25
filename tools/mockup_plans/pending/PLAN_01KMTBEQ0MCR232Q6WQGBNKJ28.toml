@@ -2,16 +2,14 @@ ulid = "01KMTBEQ0MCR232Q6WQGBNKJ28"
 owner = "mockup.scientist"
 mockup = true
 merit = 9
-required_units = 1
 approved = true
+requested_units = "any"
 
 [target]
 ra_hours = 11.813
 dec_degrees = 1.467
 name = "WD 1145+017"
 magnitude = 17.3
-requested_exposure_duration = 2400.0
-requested_number_of_exposures = 5
 
 [target.science]
 classification = "WD Exoplanet Transit"
@@ -19,6 +17,8 @@ case = "Photometric and spectroscopic monitoring for transiting debris and plane
 
 [spec_assignment]
 instrument = "deepspec"
+requested_exposure_duration = 2400.0
+requested_number_of_exposures = 5
 
 [spec_assignment.calibration]
 lamp_on = true

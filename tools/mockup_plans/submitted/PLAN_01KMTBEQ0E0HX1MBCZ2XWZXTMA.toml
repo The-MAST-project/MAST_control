@@ -2,15 +2,13 @@ ulid = "01KMTBEQ0E0HX1MBCZ2XWZXTMA"
 owner = "mockup.scientist"
 mockup = true
 merit = 4
-required_units = 1
+requested_units = "any"
 
 [target]
 ra_hours = 13.273
 dec_degrees = 29.099
 name = "HZ 43"
 magnitude = 12.9
-requested_exposure_duration = 600.0
-requested_number_of_exposures = 3
 
 [target.science]
 classification = "WD Atmospheric Composition"
@@ -18,3 +16,5 @@ case = "Atmospheric parameter determination (Teff, log g) via Balmer line profil
 
 [spec_assignment]
 instrument = "deepspec"
+requested_exposure_duration = 600.0
+requested_number_of_exposures = 3

@@ -52,15 +52,15 @@ timeout_to_guiding = 300
 
 # --- Unit assignment ---
 
-# required_units: number of units the scheduler must allocate for this plan.
-required_units = 2
+# requested_units: unit specifiers -- "mast01", "ns:1,3,5", "ns:10-17", "ns:north:2" --
+# or the word "any": every deployed unit not in maintenance. Never empty.
+requested_units = ["mast01", "mast03", "mast05"]
 
-# allocated_units: filled in by the scheduler at runtime. Do not set manually.
-allocated_units = []
+# scheduled_units: the scheduler's choice of units. Do not set manually.
+scheduled_units = []
 
-# quorum: minimum number of operational units required for the plan to proceed.
-# If fewer units are available at execution time the plan is deferred.
-# Default: 1
+# quorum: how many units must reach guiding for the plan to succeed. It fails as soon as
+# too many have failed for that. Default: 1
 quorum = 2
 
 
@@ -81,17 +81,8 @@ ra_hours = "03:19:48.16"
 # Declination — sexagesimal ("+DD:MM:SS.s") or decimal degrees (float).
 dec_degrees = "+41:30:42.1"
 
-# --- Exposure settings ---
-
-# Total requested exposure duration per visit, in seconds. Range: 0–3600.
-requested_exposure_duration = 1800.0
-
-# Maximum allowed single-frame exposure time, in seconds. Range: 0–3600.
-# The system may split requested_exposure_duration into multiple frames.
-max_exposure_duration = 600.0
-
-# Number of exposures to take per visit. Default: 1
-requested_number_of_exposures = 3
+# A target can be given by name alone (no ra_hours/dec_degrees): it is resolved once, when
+# the plan is submitted, and stored with its coordinates and a "resolved" event.
 
 # --- Science classification ---
 [target.science]
@@ -103,18 +94,6 @@ case = "Spectroscopy"
 # Scientific classification of the target.
 # Common values: "Galaxy", "Star", "AGN", "SN", "GRB", "Variable"
 classification = "AGN"
-
-# --- Repeat schedule ---
-[target.repeats]
-
-# How often per night should this target be revisited?
-# Options: "Only once" | "Once per night" | "Twice per night" | "As much as possible"
-# Default: "Only once"
-every = "Once per night"
-
-# For how many consecutive nights should the plan be rescheduled? Range: 1–100.
-# Default: 1
-nights = 7
 
 
 # =============================================================================
@@ -178,6 +157,32 @@ end_after_nights = 7
 # instrument: which spectrograph to use.
 # Options: "highspec" | "deepspec"
 instrument = "highspec"
+
+# --- Exposure settings ---
+
+# Total requested exposure duration per visit, in seconds. Range: 0–3600.
+# Required when an instrument is given.
+requested_exposure_duration = 1800.0
+
+# Maximum allowed single-frame exposure time, in seconds. Range: 0–3600.
+# The system may split requested_exposure_duration into multiple frames.
+max_exposure_duration = 600.0
+
+# Number of exposures to take per visit. Default: 1
+requested_number_of_exposures = 3
+
+# --- Repeat schedule ---
+[spec_assignment.repeats]
+
+# How often per night should this target be revisited?
+# Options: "Only once" | "Once per night" | "Twice per night" | "As much as possible"
+# Default: "Only once"
+every = "Once per night"
+
+# For how many consecutive nights should the plan be rescheduled? Range: 1–100.
+# Default: 1
+nights = 7
+
 
 # --- Calibration ---
 [spec_assignment.calibration]

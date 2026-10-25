@@ -2,16 +2,14 @@ ulid = "01KMTBEQ0YCYGP5X58C6JVXHQR"
 owner = "mockup.scientist"
 mockup = true
 merit = 9
-required_units = 1
 approved = true
+requested_units = "any"
 
 [target]
 ra_hours = 1.7
 dec_degrees = 77.1
 name = "WD 0136+768"
 magnitude = 16.3
-requested_exposure_duration = 2700.0
-requested_number_of_exposures = 3
 
 [target.science]
 classification = "WD Binary RV"
@@ -19,6 +17,8 @@ case = "Radial velocity monitoring campaign to determine orbital parameters. Hig
 
 [spec_assignment]
 instrument = "highspec"
+requested_exposure_duration = 2700.0
+requested_number_of_exposures = 3
 
 [spec_assignment.calibration]
 lamp_on = true

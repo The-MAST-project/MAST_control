@@ -6,7 +6,7 @@ import socket
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from typing import Annotated, Any, Literal
 
 import httpx
@@ -25,6 +25,7 @@ from common.filer import Filer
 from common.mast_logging import get_logger
 from common.models.assignments import AssignmentNotification
 from common.models.batches import Batch
+from common.models.plans import PlanStage
 from common.models.statuses import (
     BaseStatus,
     BasicUnitStatus,
@@ -40,9 +41,21 @@ from common.utils import (
     function_name,
     time_stamp,
 )
+from control.acquisition import Acquisitions
+from control.execution import PlanExecution
 from control.planning import Plan, Planner
 
 logger = get_logger(__name__)
+
+#: Where a notification without a `stage` -- the spectrograph's, and any producer that
+#: predates it -- is linked, by its `shared_subpath` (plans/control_acquisition_design.md 6.5).
+LEGACY_STAGES: dict[str, PlanStage] = {
+    "acquisition": PlanStage.Acquisition,
+    "focus_on_star": PlanStage.Autofocus,
+    "autofocus": PlanStage.Autofocus,
+    "highspec": PlanStage.Spec,
+    "deepspec": PlanStage.Spec,
+}
 # _units_status_cache = TTLCache(maxsize=20, ttl=30)
 
 
@@ -544,7 +557,10 @@ class Controller(Activities):
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
-        self.in_progress: Plan | Batch | None = None
+        # The execution in progress, if any, and the last one, for acquisition_status (7.2).
+        self.in_progress: PlanExecution | None = None
+        self.last_execution: PlanExecution | None = None
+        self._execution_lock = Lock()
         self._initialized = True
 
     def operational_units(self, site_name: str | None) -> list[str]:
@@ -876,19 +892,40 @@ class Controller(Activities):
         new_state = power_switch.get_outlet_state(outlet_name=outlet_name)
         return CanonicalResponse(value=new_state)
 
-    async def execute(self, work: Plan | Batch) -> CanonicalResponse:
-        """
-        Executes a plan or batch. This is called by the Planner when a plan or batch is ready to be executed.
-        """
-        if self.in_progress is not None:
-            return CanonicalResponse(errors=[f"another plan/batch is already in progress: '{self.in_progress.ulid}'"])
+    def start_execution(self, work: Plan | Batch, toml_path: str | os.PathLike | None = None) -> CanonicalResponse:
+        """Start executing ``work`` on its own thread and answer at once (5.1).
 
-        self.in_progress = work
-        try:
-            await work.execute(controller=self)
-        finally:
-            self.in_progress = None
-        return CanonicalResponse_Ok
+        One execution at a time: `in_progress` holds it until it terminates, and
+        `last_execution` keeps it afterwards so `acquisition_status` can say how it ended.
+        A `Batch` is refused: its execution needs its own design on top of `PlanExecution`
+        (plans/control_acquisition_design.md 10).
+        """
+        if isinstance(work, Batch):
+            return CanonicalResponse(errors=["executing a batch is not implemented"])
+        path = toml_path or work.full_path or (work.model_extra or {}).get("toml_file")
+        if path is None:
+            return CanonicalResponse(errors=[f"plan {work.ulid}: no file to execute it from"])
+        local_site = Config().local_site
+        execution = PlanExecution(
+            work,
+            path,
+            self.managed_sites(),
+            local_site,
+            spec_api=(lambda: SpecApi(local_site.name)) if local_site is not None else None,
+            on_terminated=self._execution_ended,
+        )
+        with self._execution_lock:
+            if self.in_progress is not None:
+                return CanonicalResponse(errors=[f"plan {self.in_progress.plan.ulid} is in progress"])
+            self.in_progress = execution
+            self.last_execution = execution
+        Thread(name=f"plan-{work.ulid}", target=execution.run, daemon=True).start()
+        return CanonicalResponse(value=work.ulid)
+
+    def _execution_ended(self, execution: PlanExecution) -> None:
+        with self._execution_lock:
+            if self.in_progress is execution:
+                self.in_progress = None
 
     async def notifications_endpoint(
         self,
@@ -912,58 +949,43 @@ class Controller(Activities):
         return CanonicalResponse_Ok
 
     async def _handle_assignment_notification(self, notification: AssignmentNotification):
+        """Link a producer's products folder into the execution's products folder (5.10).
+
+        Only for the plan in progress, and only once it has a products folder. The folder is
+        `share_root/<producer's hostname>/<shared_top>` -- `shared_top` is relative to the
+        producer's own folder on the share, which only this end can spell -- linked under
+        `<Stage>/<unit, or instrument for Spec>/`. The target may not be on the share yet:
+        products reach it after the RAM-to-share move, so that is the normal order, not a fault.
+        """
         op = function_name()
-        if self.in_progress is None:
-            logger.error(f"{op}: no in_progress assignment")
+        execution = self.in_progress
+        if execution is None or execution.plan.ulid != notification.assignment_id:
+            logger.info(f"{op}: '{notification.assignment_id}' is not the plan in progress; not linked")
             return
-
-        if notification.assignment_id != self.in_progress.ulid:
-            logger.error(
-                f"{op}: ignored notification for '{notification.assignment_id}' (in_progress='{self.in_progress.ulid}')"
-            )
+        if execution.products is None or notification.shared_top is None:
             return
-
-        if notification.shared_top is None or notification.shared_subpath is None:
+        hostname = notification.initiator.hostname if notification.initiator else None
+        if hostname is None:
+            logger.warning(f"{op}: a notification for '{notification.assignment_id}' names no producer; not linked")
             return
-
-        assert self.in_progress.run_folder is not None
-        assert notification.initiator is not None
-        assert notification.initiator.hostname is not None
-        # `shared_top` is relative to the producer's shared root, so only this end can spell
-        # it: the producers' root is `Z:/MAST/<hostname>/` while ours is the share itself,
-        # with the producer's host as the next component. Join it the same way DataServer
-        # addresses per-unit storage.
-        #
-        # `share_root`, not `shared`: `shared` is THIS machine's folder in the share on every
-        # platform once MAST_common makes it per-machine on Linux too
-        # (plans/filing-areas-design.md 3.1), and joining a unit's hostname under
-        # `.../MAST/mast-ns-control/` would leave every product link dangling. Today the
-        # two are the same path on Linux, so this changes nothing until that lands.
-        shared_root = Filer().share_root.root
+        stage = notification.stage or LEGACY_STAGES.get(notification.shared_subpath or "")
+        if stage is None:
+            logger.warning(f"{op}: {hostname}: unknown products kind {notification.shared_subpath!r}; not linked")
+            return
         if os.path.isabs(notification.shared_top) or ":" in notification.shared_top:
-            # Pre-MAST_spec#39 producer: an absolute path, usually a `D:/MAST/...` ram path
-            # that is reaped once the products move and means nothing here anyway. Kept
-            # working-as-before rather than reinterpreted, so the repos need not deploy
-            # together, but it cannot produce a resolvable link.
-            logger.warning(
-                f"{op}: '{notification.initiator.hostname}' sent an absolute shared_top "
-                f"('{notification.shared_top}'); expected a path relative to the shared root"
-            )
-            src = notification.shared_top
-        else:
-            src = str(Path(shared_root) / notification.initiator.hostname / notification.shared_top)
-
-        dst = Path(self.in_progress.run_folder) / notification.initiator.hostname / notification.shared_subpath
+            # Pre-MAST_spec#39: an absolute `D:/MAST/...` path, reaped once the products
+            # move and meaningless here. Nothing it could be linked to.
+            logger.warning(f"{op}: {hostname} sent an absolute shared_top ({notification.shared_top!r}); not linked")
+            return
+        producer = notification.shared_subpath if stage is PlanStage.Spec and notification.shared_subpath else hostname
+        target = Path(Filer().share_root.root) / hostname / notification.shared_top
         try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            if not Path(src).exists():
-                # os.symlink happily creates a dangling link, which is how this went
-                # unnoticed; say so rather than leave a broken link behind silently.
-                logger.warning(f"{op}: symlink source '{src}' does not exist (link will dangle)")
-            os.symlink(src, dst)
-            logger.info(f"{op}: symlink '{src}' -> '{dst}'")
+            link = execution.products.link(stage, producer, target)
         except OSError as e:
-            logger.error(f"{op}: failed to symlink '{src}' -> '{dst}': {e}")
+            logger.error(f"{op}: could not link '{target}' into '{execution.products.root}': {e}")
+            return
+        there = "" if target.exists() else " (not on the share yet)"
+        logger.info(f"{op}: linked '{link}' -> '{target}'{there}")
 
     async def _relay_to_django(self, data):
         op = function_name()
@@ -1129,6 +1151,7 @@ class Controller(Activities):
             methods=["PUT", "POST"],
         )
         self.planner.add_routes(router)
+        Acquisitions(self).add_routes(router)
 
         # router.add_api_route(base_path + '/{unit}/expose', tags=[tag], endpoint=scheduler.units.{unit}.expose)
         # router.add_api_route(base_path + '/{unit}/move_to_coordinates', tags=[tag], "

@@ -1,13 +1,13 @@
-import asyncio
 import shutil
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
 from threading import Lock
+from typing import Annotated
 
-import tomlkit
 import ulid
-from pydantic import BaseModel, Field
+from fastapi import Body
+from pydantic import BaseModel, Field, ValidationError
 
 from common.canonical import CanonicalResponse, CanonicalResponse_Ok
 from common.config import Config
@@ -16,8 +16,10 @@ from common.mast_logging import get_logger
 from common.models.constraints import ConstraintsModel, RepeatsModel
 from common.models.events import EventModel
 from common.models.plan_scraping import ScrapingResults
-from common.models.plans import Plan
+from common.models.plans import DEFAULT_TIMEOUT_TO_GUIDING, Plan, plan_to_toml
 from common.models.spectrographs import SpectrographModel
+from common.models.targets import resolve_target
+from common.object_resolver import ObjectNameError
 from common.paths import PathMaker
 from common.utils import function_name
 
@@ -134,24 +136,24 @@ class NewPlanTemplate(BaseModel):
     ulid: str
     owner: str | None = None
     merit: int = 1
-    timeout_to_guiding: float = 600
+    timeout_to_guiding: float = DEFAULT_TIMEOUT_TO_GUIDING
     autofocus: bool = False
     too: bool = False
     approved: bool = False
     production: bool = True
     quorum: int = 1
     requested_units: list[str] = []
-    target: dict = Field(
+    target: dict = Field(default_factory=lambda: {"ra_hours": None, "dec_degrees": None})
+    # The exposure series is the spectrograph's (plans/control_acquisition_design.md 3.2).
+    spec_assignment: dict = Field(
         default_factory=lambda: {
-            "ra_hours": None,
-            "dec_degrees": None,
+            **SpectrographModel().model_dump(),
             "requested_exposure_duration": None,
             "requested_number_of_exposures": 1,
             "max_exposure_duration": None,
             "repeats": RepeatsModel().model_dump(),
         }
     )
-    spec_assignment: dict = Field(default_factory=lambda: SpectrographModel().model_dump())
     constraints: dict = Field(default_factory=lambda: ConstraintsModel().model_dump())
     filter_options: list[str] = []
 
@@ -350,6 +352,11 @@ class Planner:
 
     def do_cancel_plan(self, plan: Plan):
         assert plan is not None and plan.full_path is not None
+        execution = self.controller.in_progress if self.controller is not None else None
+        if execution is not None and execution.plan.ulid == plan.ulid:
+            # Running: abort it, and its termination moves the file to canceled/ (5.8).
+            execution.abort()
+            return
         new_path = self.canceled_folder.folder_path / plan.full_path.name
 
         logger.debug(f"canceling plan {plan.ulid}, moving {plan.full_path!s} to {new_path!s}")
@@ -383,7 +390,11 @@ class Planner:
         logger.debug(f"executing plan {plan.ulid}, moving {plan.full_path!s} to {new_path!s}")
         shutil.move(str(plan.full_path), str(new_path))
 
-        asyncio.create_task(self.controller.execute(plan))
+        response = self.controller.start_execution(plan, new_path)
+        if response.failed:
+            # Not started: back where it came from, so it can be executed later.
+            shutil.move(str(new_path), str(plan.full_path))
+            raise RuntimeError("; ".join(response.errors or []))
         return CanonicalResponse_Ok
 
     def get_new_plan(self) -> CanonicalResponse:
@@ -397,25 +408,34 @@ class Planner:
         except Exception as e:  # noqa: BLE001 -- API endpoint: any failure must come back as an envelope, not a 500
             return CanonicalResponse(errors=[f"{function_name()}: {e}"])
 
-    def submit_plan(self, plan: Plan) -> CanonicalResponse:
+    def submit_plan(self, plan: Annotated[dict, Body()]) -> CanonicalResponse:
+        """Store a plan in `submitted/`. A plan without a spectrograph is valid (7.1): a
+        person can write the plan control generates. A target named but without both
+        coordinates usable is resolved now, once, and stored with its coordinates and a
+        `resolved` event (3.8) -- which is why this takes the raw body: as a `Plan` it would
+        be refused for the missing coordinates before it could be resolved."""
         try:
-            if plan.spec_assignment is None or plan.spec_assignment.instrument is None:
-                return CanonicalResponse(errors=["submit_plan: spec_assignment.instrument must be specified"])
-            if plan.ulid is None:
+            if not plan.get("ulid"):
                 return CanonicalResponse(errors=["submit_plan: plan must have a ulid"])
+            events = [EventModel(what="submitted")]
+            try:
+                target, resolved = resolve_target(dict(plan.get("target") or {}))
+            except ObjectNameError as e:
+                return CanonicalResponse(errors=[f"submit_plan: could not resolve the target's name -- {e}"])
+            except ValueError as e:
+                return CanonicalResponse(errors=[f"submit_plan: target: {e}"])
+            if resolved is not None:
+                events.append(resolved)
+            try:
+                validated = Plan(**{**plan, "target": target, "events": events})
+            except ValidationError as e:
+                return CanonicalResponse(
+                    errors=[f"submit_plan: {'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()]
+                )
 
-            file_path = self.submitted_folder.folder_path / f"PLAN_{plan.ulid}.toml"
-
-            plan_dict = plan.model_dump(
-                mode="json",
-                exclude={"full_path", "spec_api", "committed_unit_apis"},
-                exclude_none=True,
-            )
-            submitted_event = EventModel(what="submitted").model_dump(mode="json", exclude_none=True)
-            plan_dict["events"] = [submitted_event]
-
+            file_path = self.submitted_folder.folder_path / f"PLAN_{validated.ulid}.toml"
             with open(file_path, "w") as f:
-                f.write(tomlkit.dumps(plan_dict))
+                f.write(plan_to_toml(validated))
 
             self.submitted_folder.refresh()
             try:

@@ -2,16 +2,14 @@ ulid = "01KMTBEQ0W18DHYCE65TVCVQYX"
 owner = "mockup.scientist"
 mockup = true
 merit = 6
-required_units = 1
 approved = true
+requested_units = "any"
 
 [target]
 ra_hours = 11.813
 dec_degrees = 7.25
 name = "WD 1145+074"
 magnitude = 16.1
-requested_exposure_duration = 1800.0
-requested_number_of_exposures = 3
 
 [target.science]
 classification = "WD Pollution"
@@ -19,6 +17,8 @@ case = "Spectroscopic monitoring to characterize accreted planetary material. De
 
 [spec_assignment]
 instrument = "deepspec"
+requested_exposure_duration = 1800.0
+requested_number_of_exposures = 3
 
 [[events]]
 what = "approved"

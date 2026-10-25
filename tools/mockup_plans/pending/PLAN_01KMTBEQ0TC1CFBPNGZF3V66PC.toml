@@ -2,16 +2,14 @@ ulid = "01KMTBEQ0TC1CFBPNGZF3V66PC"
 owner = "mockup.scientist"
 mockup = true
 merit = 2
-required_units = 1
 approved = true
+requested_units = "any"
 
 [target]
 ra_hours = 21.317
 dec_degrees = -55.817
 name = "WD 2115-560"
 magnitude = 15.3
-requested_exposure_duration = 1800.0
-requested_number_of_exposures = 3
 
 [target.science]
 classification = "WD Atmospheric Composition"
@@ -19,6 +17,8 @@ case = "Atmospheric parameter determination (Teff, log g) via Balmer line profil
 
 [spec_assignment]
 instrument = "deepspec"
+requested_exposure_duration = 1800.0
+requested_number_of_exposures = 3
 
 [[events]]
 what = "approved"

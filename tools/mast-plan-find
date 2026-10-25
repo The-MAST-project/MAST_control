@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from common.models.plan_scraping import OwnersModel, ScrapingResults
 from common.models.plans import Plan
+from common.parsers import ANY_UNITS
 from common.utils import time_stamp
 from control.planning import PlanState
 
@@ -430,7 +431,7 @@ def do_scrape(force: bool = False):
     owners_by_uuid: dict[str, str | None] = {}
     owners_by_name: set[str] = set()
     classifications: set[str] = set()
-    required_units: set[int] = set()
+    known_units: set[str] = set()
     count = 0
 
     for _state, toml_path in iter_plans():
@@ -446,8 +447,10 @@ def do_scrape(force: bool = False):
                 owners_by_name.add(plan.owner)
         if plan.target and plan.target.science and plan.target.science.classification:
             classifications.add(plan.target.science.classification)
-        if plan.required_units:
-            required_units.add(plan.required_units)
+        # The units named across all plans, for the GUI's unit picker: requested
+        # specifiers as written (never "any") and the scheduler's choices.
+        known_units.update(u for u in plan.requested_units if u != ANY_UNITS)
+        known_units.update(plan.scheduled_units)
         count += 1
 
     uuid_display = _fetch_uuid_display_map()
@@ -464,7 +467,7 @@ def do_scrape(force: bool = False):
         owners=owner_models,
         classifications=sorted(classifications),
         known_classifications=load_known_classifications(),
-        required_units=min(required_units) if required_units else None,
+        known_units=sorted(known_units),
         scraped_at=time_stamp(),
     )
     sr_path = files_folder() / "scraping_results.json"

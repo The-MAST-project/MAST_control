@@ -193,7 +193,7 @@ def make_plan_toml(
     doc.add("owner", "mockup.scientist")
     doc.add("mockup", True)
     doc.add("merit", merit)
-    doc.add("required_units", 1)
+    doc.add("requested_units", "any")
 
     if pool == "pending":
         doc.add("approved", True)
@@ -208,8 +208,6 @@ def make_plan_toml(
         target.add("dec_degrees", dec_degrees)
         target.add("name", name)
         target.add("magnitude", magnitude)
-        target.add("requested_exposure_duration", exp_dur)
-        target.add("requested_number_of_exposures", n_exp)
 
         science = tomlkit.table()
         science.add("classification", classification)
@@ -225,6 +223,9 @@ def make_plan_toml(
             pass  # omit instrument — soft error
         else:
             spec.add("instrument", instrument)
+        # The exposure series is the spectrograph's (plans/control_acquisition_design.md 3.2).
+        spec.add("requested_exposure_duration", exp_dur)
+        spec.add("requested_number_of_exposures", n_exp)
 
         if lamp_on:
             cal = tomlkit.table()

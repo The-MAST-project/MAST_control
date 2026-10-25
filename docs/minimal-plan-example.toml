@@ -4,8 +4,16 @@
 owner  = "jdoe"
 merit  = 7        # 1–10
 
+# Unit specifiers ("mast01", "ns:1,3,5", "ns:10-17"), or "any". Never empty.
+requested_units = ["mast01", "mast03"]
+
 [target]
-name                        = "NGC 1275"
-ra_hours                    = "03:19:48.16"   # sexagesimal or decimal hours
-dec_degrees                 = "+41:30:42.1"   # sexagesimal or decimal degrees
-requested_exposure_duration = 1800.0          # seconds, 0–3600
+name        = "NGC 1275"
+ra_hours    = "03:19:48.16"   # sexagesimal or decimal hours
+dec_degrees = "+41:30:42.1"   # sexagesimal or decimal degrees
+# Or the name alone: it is resolved once, when the plan is submitted.
+
+# Optional: without it, the units acquire and guide, and no spectrum is taken.
+[spec_assignment]
+instrument                  = "highspec"
+requested_exposure_duration = 1800.0          # seconds, 0–3600; required with an instrument
