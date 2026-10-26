@@ -937,18 +937,24 @@ class Controller(Activities):
         """
         Unified notification endpoint. Dispatches on data.type:
         - 'ui_notification': relay to Django for SSE broadcast
-        - 'assignment_notification': update run folder symlinks + relay to Django
+        - 'assignment_notification': act on it, then relay to Django
+
+        An assignment notification is a handshake: `ok` means it was acted on -- or deliberately
+        ignored, which no resend could change -- and the sender keeps it until it gets one
+        (MAST_common `Notifier`). Errors are for what a resend might fix. The relay to Django
+        never affects the answer.
         """
         op = function_name()
         logger.info(f"{op}: type={data.type} from {(data.initiator and data.initiator.hostname) or 'unknown initiator'}")
 
+        errors: list[str] = []
         if isinstance(data, AssignmentNotification):
-            await self._handle_assignment_notification(data)
+            errors = await self._handle_assignment_notification(data)
 
         await self._relay_to_django(data)
-        return CanonicalResponse_Ok
+        return CanonicalResponse(errors=errors) if errors else CanonicalResponse_Ok
 
-    async def _handle_assignment_notification(self, notification: AssignmentNotification):
+    async def _handle_assignment_notification(self, notification: AssignmentNotification) -> list[str]:
         """Link a producer's products folder into the execution's products folder (5.10).
 
         Only for the plan in progress, and only once it has a products folder. The folder is
@@ -956,36 +962,41 @@ class Controller(Activities):
         producer's own folder on the share, which only this end can spell -- linked under
         `<Stage>/<unit, or instrument for Spec>/`. The target may not be on the share yet:
         products reach it after the RAM-to-share move, so that is the normal order, not a fault.
+
+        Returns what failed that a resend might fix -- the link could not be made -- else []:
+        acted on, or deliberately ignored (not the plan in progress, no products folder, an
+        unknown kind, an absolute path). That is the sender's handshake.
         """
         op = function_name()
         execution = self.in_progress
         if execution is None or execution.plan.ulid != notification.assignment_id:
             logger.info(f"{op}: '{notification.assignment_id}' is not the plan in progress; not linked")
-            return
+            return []
         if execution.products is None or notification.shared_top is None:
-            return
+            return []
         hostname = notification.initiator.hostname if notification.initiator else None
         if hostname is None:
             logger.warning(f"{op}: a notification for '{notification.assignment_id}' names no producer; not linked")
-            return
+            return []
         stage = notification.stage or LEGACY_STAGES.get(notification.shared_subpath or "")
         if stage is None:
             logger.warning(f"{op}: {hostname}: unknown products kind {notification.shared_subpath!r}; not linked")
-            return
+            return []
         if os.path.isabs(notification.shared_top) or ":" in notification.shared_top:
             # Pre-MAST_spec#39: an absolute `D:/MAST/...` path, reaped once the products
             # move and meaningless here. Nothing it could be linked to.
             logger.warning(f"{op}: {hostname} sent an absolute shared_top ({notification.shared_top!r}); not linked")
-            return
+            return []
         producer = notification.shared_subpath if stage is PlanStage.Spec and notification.shared_subpath else hostname
         target = Path(Filer().share_root.root) / hostname / notification.shared_top
         try:
             link = execution.products.link(stage, producer, target)
         except OSError as e:
             logger.error(f"{op}: could not link '{target}' into '{execution.products.root}': {e}")
-            return
+            return [f"{op}: could not link '{target}': {e}"]
         there = "" if target.exists() else " (not on the share yet)"
         logger.info(f"{op}: linked '{link}' -> '{target}'{there}")
+        return []
 
     async def _relay_to_django(self, data):
         op = function_name()

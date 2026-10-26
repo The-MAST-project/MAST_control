@@ -112,3 +112,52 @@ def test_a_plan_not_in_progress_is_not_linked(controller, products):
 def test_an_absolute_shared_top_is_not_linked(controller, products):
     _notify(controller, "D:/MAST/2026-10-21/Acquisitions/seq=0001", stage=PlanStage.Acquisition)
     assert not any(Path(products.root).rglob("seq=0001"))
+
+
+class TestTheHandshake:
+    """The endpoint answers `ok` once it has acted on a notification, or deliberately ignored
+    it; errors only for what a resend might fix. The sender keeps a notification until `ok`."""
+
+    @pytest.fixture
+    def endpoint(self, controller, monkeypatch):
+        async def no_relay(data):
+            return None
+
+        monkeypatch.setattr(controller, "_relay_to_django", no_relay)
+
+        def call(**fields):
+            from common.models.assignments import AssignmentNotification
+            from common.notifications import NotificationInitiator
+
+            notification = AssignmentNotification(
+                assignment_id=fields.pop("ulid", ULID),
+                state="in-progress",
+                initiator=NotificationInitiator(site="ns", type="unit", hostname="mast03"),
+                **fields,
+            )
+            return asyncio.run(controller.notifications_endpoint(notification))
+
+        return call
+
+    def test_linked_is_ok(self, endpoint):
+        assert endpoint(shared_top="2026-10-21/Acquisitions/seq=0001", stage=PlanStage.Acquisition).value == "ok"
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"ulid": "01OTHER", "shared_top": "x/y", "stage": PlanStage.Acquisition},
+            {"shared_top": "x/y", "shared_subpath": "mystery"},
+            {"shared_top": "D:/MAST/x/y", "stage": PlanStage.Acquisition},
+        ],
+        ids=["not-the-plan-in-progress", "unknown-kind", "absolute-path"],
+    )
+    def test_ignored_on_purpose_is_ok_too(self, endpoint, fields):
+        assert endpoint(**fields).value == "ok", "no resend could change it"
+
+    def test_a_link_that_cannot_be_made_is_an_error_to_resend(self, endpoint, products, monkeypatch):
+        def fail(*args, **kwargs):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(type(products), "link", fail)
+        response = endpoint(shared_top="2026-10-21/Acquisitions/seq=0001", stage=PlanStage.Acquisition)
+        assert response.failed and "No space left on device" in response.errors[0]
