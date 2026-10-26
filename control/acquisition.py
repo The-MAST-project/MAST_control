@@ -4,13 +4,12 @@
 `start_acquisition` writes a plan -- the target, the units, optionally `focus_on_star`, no
 spectrograph -- straight into `in-progress/`, and executes it like any other: the same
 engine, events and folder moves. `acquisition_status` shows the current execution (or the
-last) with every unit's live status; `abort_acquisition` aborts it.
+last) with every unit's live status. Control's `abort` aborts it, as any workload.
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -21,7 +20,6 @@ from pydantic import ValidationError
 
 from common.api import UnitApi
 from common.canonical import CanonicalResponse
-from common.config import Config
 from common.const import Const
 from common.mast_logging import get_logger
 from common.models.events import EventModel
@@ -30,15 +28,13 @@ from common.models.statuses import COOLING_DOWN_REASON
 from common.models.targets import resolve_target
 from common.object_resolver import ObjectNameError
 from common.parsers import ANY_UNITS, DEC_PATTERN, RA_PATTERN
-from control.execution import PlanExecution, UnitRunState, _get, resolve_units
+from control.execution import PlanExecution, UnitRunState, _get
 
 if TYPE_CHECKING:
     from control.controller import Controller
 
 logger = get_logger(__name__)
 
-#: How long a new acquisition waits for the previous one's units to clear `Aborting` (7.1).
-ABORT_WAIT_SECONDS = 30.0
 #: Each unit's fresh status for the table (7.2).
 STATUS_TIMEOUT_SECONDS = 5.0
 
@@ -100,26 +96,6 @@ class Acquisitions:
         except ValidationError as e:
             return [f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()]
 
-    def _make_room(self, plan: Plan) -> list[str]:
-        """Step 2: abort an acquisition in progress, never a science plan; then wait for the
-        requested units to clear `Aborting`."""
-        current = self.controller.in_progress
-        if current is not None:
-            if _has_spectrograph(current):
-                return [f"plan {current.plan.ulid} is in progress"]
-            current.abort()
-            current.wait(ABORT_WAIT_SECONDS)
-        try:
-            names = resolve_units(plan, self.controller.managed_sites(), Config().local_site)
-        except ValueError as e:
-            return [f"units: {e}"]
-        deadline = time.monotonic() + ABORT_WAIT_SECONDS
-        while True:
-            aborting = [n for n in names if "Aborting" in (_get(self._status(n), "activities_verbal") or [])]
-            if not aborting or time.monotonic() >= deadline:
-                return [f"{n}: still aborting" for n in aborting]
-            time.sleep(1.0)
-
     def _status(self, name: str) -> Any:
         try:
             response = asyncio.run(self._unit_api(name).get("status", timeout=STATUS_TIMEOUT_SECONDS))
@@ -128,8 +104,13 @@ class Acquisitions:
         return _get(response, "value") if _get(response, "succeeded", False) else None
 
     def start(self, plan: Plan) -> CanonicalResponse:
-        """Steps 2-4: make room, write the plan into `in-progress/`, load it back, execute."""
-        problems = self._make_room(plan)
+        """Steps 2-4: refuse while a workload is in progress or a unit works for another plan
+        -- nothing switches between plans, an abort does (6.6) -- then write the plan into
+        `in-progress/`, load it back, and execute it."""
+        current = self.controller.in_progress
+        if current is not None:
+            return CanonicalResponse(errors=[f"plan {current.plan.ulid} is in progress; abort it first"])
+        problems = self.controller.units_held_by_other_plans(plan)
         if problems:
             return CanonicalResponse(errors=problems)
         planner = self.controller.planner
@@ -195,15 +176,6 @@ class Acquisitions:
         """The current acquisition, or the last one: each unit's place in it and its live status."""
         return PlainTextResponse(await asyncio.to_thread(self.table))
 
-    # --- abort ----------------------------------------------------------------------------
-
-    async def endpoint_abort_acquisition(self) -> CanonicalResponse:
-        execution = self.controller.in_progress
-        if execution is None:
-            return CanonicalResponse(errors=["no acquisition"])
-        failures = await asyncio.to_thread(execution.abort)
-        return CanonicalResponse(errors=failures) if failures else CanonicalResponse(value=execution.plan.ulid)
-
     def add_routes(self, router) -> None:
         base = Const.BASE_CONTROL_PATH
         tag = "acquisition"
@@ -212,9 +184,6 @@ class Acquisitions:
         )
         router.add_api_route(
             base + "/acquisition_status", tags=[tag], endpoint=self.endpoint_acquisition_status, methods=["GET"]
-        )
-        router.add_api_route(
-            base + "/abort_acquisition", tags=[tag], endpoint=self.endpoint_abort_acquisition, methods=["PUT"]
         )
 
 

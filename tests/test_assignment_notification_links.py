@@ -29,6 +29,8 @@ ULID = "01JAD8Q4ZK7V3M2XG9T6R5N0HB"
 def _notify(controller, shared_top: str | None, unit: str = "mast03", subpath=None, stage=None, ulid=ULID):
     notification = SimpleNamespace(
         assignment_id=ulid,
+        state="in-progress",
+        errors=None,
         shared_top=shared_top,
         shared_subpath=subpath,
         stage=stage,
@@ -161,3 +163,32 @@ class TestTheHandshake:
         monkeypatch.setattr(type(products), "link", fail)
         response = endpoint(shared_top="2026-10-21/Acquisitions/seq=0001", stage=PlanStage.Acquisition)
         assert response.failed and "No space left on device" in response.errors[0]
+
+
+class TestTheSpectrographsWord:
+    """`completed` / `failed` from the spectrograph, the plan's last actor, end its part (6.6)."""
+
+    @pytest.fixture
+    def finished(self, controller):
+        calls: list = []
+        controller.in_progress.spectrograph_finished = lambda errors=None: calls.append(errors)
+        return calls
+
+    def _say(self, controller, state, errors=None, ulid=ULID):
+        notification = SimpleNamespace(
+            assignment_id=ulid, state=state, errors=errors, stage=PlanStage.Spec, shared_top=None, shared_subpath=None,
+            initiator=SimpleNamespace(hostname="mast-ns-spec"),
+        )  # fmt: skip
+        return asyncio.run(controller._handle_assignment_notification(notification))
+
+    def test_completed(self, controller, finished):
+        assert self._say(controller, "completed") == []
+        assert finished == [None]
+
+    def test_failed_with_its_errors(self, controller, finished):
+        assert self._say(controller, "failed", ["camera lost"]) == []
+        assert finished == [["camera lost"]]
+
+    def test_for_a_plan_not_in_progress_it_is_acknowledged_and_ignored(self, controller, finished):
+        assert self._say(controller, "completed", ulid="01OTHER") == []
+        assert finished == []

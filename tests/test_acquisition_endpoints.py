@@ -12,7 +12,6 @@ import pytest
 import tomlkit
 
 import common.object_resolver as resolver_module
-import control.acquisition as acquisition_module
 import control.planning as planning_module
 from common.config.site import Site
 from common.object_resolver import ObjectNameError, ResolvedObject
@@ -65,8 +64,6 @@ class FakeExecution:
 
 @pytest.fixture
 def controller(tmp_path, site, monkeypatch):
-    monkeypatch.setattr(acquisition_module, "Config", lambda: SimpleNamespace(local_site=site))
-    monkeypatch.setattr(acquisition_module, "ABORT_WAIT_SECONDS", 0.05)
     started = []
     in_progress = tmp_path / "in-progress"
     in_progress.mkdir()
@@ -77,6 +74,8 @@ def controller(tmp_path, site, monkeypatch):
         planner=SimpleNamespace(in_progress_folder=SimpleNamespace(folder_path=in_progress, refresh=lambda: None)),
         start_execution=lambda plan, path: started.append((plan, Path(path))) or SimpleNamespace(value=plan.ulid),
         started=started,
+        held={},
+        units_held_by_other_plans=lambda plan: [],
     )
 
 
@@ -129,20 +128,18 @@ class TestStart:
         assert tomlkit.parse(path.read_text())["requested_units"] == ["mast01"]
         assert started.full_path == path
 
-    def test_an_acquisition_in_progress_is_aborted(self, controller):
+    def test_a_workload_in_progress_refuses_nothing_is_aborted(self, controller):
         controller.in_progress = previous = FakeExecution()
-        assert acquisitions(controller).start(self._plan(controller)).value
-        assert previous.aborted
-
-    def test_a_science_plan_in_progress_refuses(self, controller):
-        controller.in_progress = science = FakeExecution(spec=SimpleNamespace(instrument="highspec"))
         response = acquisitions(controller).start(self._plan(controller))
-        assert response.errors == ["plan 01OLD is in progress"]
-        assert not science.aborted and controller.started == []
+        assert response.errors == ["plan 01OLD is in progress; abort it first"]
+        assert not previous.aborted and controller.started == []
 
-    def test_a_unit_still_aborting_refuses(self, controller):
-        aborting = acquisitions(controller, {"mast01": {"activities_verbal": ["Aborting"]}})
-        assert aborting.start(self._plan(controller)).errors == ["mast01: still aborting"]
+    def test_units_working_for_another_plan_refuse_before_anything_is_written(self, controller):
+        controller.units_held_by_other_plans = lambda plan: ["mast01: working on plan 01OLD; abort it first"]
+        response = acquisitions(controller).start(self._plan(controller))
+        assert response.errors == ["mast01: working on plan 01OLD; abort it first"]
+        assert controller.started == []
+        assert not list(controller.planner.in_progress_folder.folder_path.iterdir()), "no plan file left behind"
 
 
 class TestTheTable:

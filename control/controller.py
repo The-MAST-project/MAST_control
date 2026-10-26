@@ -916,11 +916,56 @@ class Controller(Activities):
         )
         with self._execution_lock:
             if self.in_progress is not None:
-                return CanonicalResponse(errors=[f"plan {self.in_progress.plan.ulid} is in progress"])
+                return CanonicalResponse(errors=[f"plan {self.in_progress.plan.ulid} is in progress; abort it first"])
+        problems = self.units_held_by_other_plans(work)
+        if problems:
+            return CanonicalResponse(errors=problems)
+        with self._execution_lock:
+            if self.in_progress is not None:
+                return CanonicalResponse(errors=[f"plan {self.in_progress.plan.ulid} is in progress; abort it first"])
             self.in_progress = execution
             self.last_execution = execution
         Thread(name=f"plan-{work.ulid}", target=execution.run, daemon=True).start()
         return CanonicalResponse(value=work.ulid)
+
+    def units_held_by_other_plans(self, plan: Plan) -> list[str]:
+        """Why ``plan`` cannot start: its units that work for another plan (6.6), each read
+        fresh and in parallel. Nothing switches a unit between plans: an abort releases it.
+        An unreachable unit is not a reason here -- its worker fails it, in its own words."""
+        from concurrent.futures import ThreadPoolExecutor as Pool
+
+        from control.execution import _get, resolve_units
+
+        try:
+            names = resolve_units(plan, self.managed_sites(), Config().local_site)
+        except ValueError:
+            return []  # the execution reports a bad specifier itself
+
+        def owner(name: str) -> str | None:
+            try:
+                response = asyncio.run(UnitApi(hostname=name).get("status", timeout=5.0))
+            except Exception:  # noqa: BLE001 -- unreachable: not this check's to report
+                return None
+            return _get(_get(response, "value"), "plan_id") if _get(response, "succeeded", False) else None
+
+        if not names:
+            return []
+        with Pool(max_workers=len(names)) as pool:
+            owners = dict(zip(names, pool.map(owner, names), strict=True))
+        return [
+            f"{name}: working on plan {held}; abort it first"
+            for name, held in owners.items()
+            if held is not None and held != plan.ulid
+        ]
+
+    async def endpoint_abort(self) -> CanonicalResponse:
+        """Abort the workload in progress -- there is only ever one -- through every
+        participant's own `abort`. Answers with the abort calls that failed, if any."""
+        execution = self.in_progress
+        if execution is None:
+            return CanonicalResponse(errors=["nothing in progress"])
+        failures = await asyncio.to_thread(execution.abort)
+        return CanonicalResponse(errors=failures) if failures else CanonicalResponse(value=execution.plan.ulid)
 
     def _execution_ended(self, execution: PlanExecution) -> None:
         with self._execution_lock:
@@ -971,6 +1016,11 @@ class Controller(Activities):
         execution = self.in_progress
         if execution is None or execution.plan.ulid != notification.assignment_id:
             logger.info(f"{op}: '{notification.assignment_id}' is not the plan in progress; not linked")
+            return []
+        if notification.state in ("completed", "failed") and notification.stage is PlanStage.Spec:
+            # The spectrograph, the plan's last actor, is done with it (6.6). The execution
+            # ends the plan, aborting its units; a resend changes nothing.
+            execution.spectrograph_finished(notification.errors if notification.state == "failed" else None)
             return []
         if execution.products is None or notification.shared_top is None:
             return []
@@ -1107,6 +1157,8 @@ class Controller(Activities):
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
         router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
+        # The workload in progress, a plan or a batch: there is only ever one (6.6).
+        router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
 
         tag = "Config"
         router.add_api_route(

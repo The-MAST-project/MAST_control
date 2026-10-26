@@ -211,9 +211,8 @@ class Planner:
                 (PlanState.postponed, self.do_postpone_plan),
                 (PlanState.deleted, self.do_delete_plan),
             ],
-            PlanState.in_progress: [
-                (PlanState.canceled, self.do_cancel_plan),
-            ],
+            # Nothing out of in-progress by a transition: a plan ends by its execution
+            # terminating, or by control's `abort` (6.6).
             PlanState.postponed: [
                 (PlanState.pending, self.do_revive_plan),
             ],
@@ -247,9 +246,6 @@ class Planner:
 
     async def transition_to_in_progress(self, plan_ids: list[str]) -> CanonicalResponse:
         return self.transition_plans(plan_ids, PlanState.in_progress)
-
-    def transition_to_canceled(self, plan_ids: list[str]) -> CanonicalResponse:
-        return self.transition_plans(plan_ids, PlanState.canceled)
 
     def transition_to_completed(self, plan_ids: list[str]) -> CanonicalResponse:
         return self.transition_plans(plan_ids, PlanState.completed)
@@ -349,18 +345,6 @@ class Planner:
                 if len(matching_plans) > 0:
                     return (PlanState(folder.folder_name), matching_plans[0])
         return None
-
-    def do_cancel_plan(self, plan: Plan):
-        assert plan is not None and plan.full_path is not None
-        execution = self.controller.in_progress if self.controller is not None else None
-        if execution is not None and execution.plan.ulid == plan.ulid:
-            # Running: abort it, and its termination moves the file to canceled/ (5.8).
-            execution.abort()
-            return
-        new_path = self.canceled_folder.folder_path / plan.full_path.name
-
-        logger.debug(f"canceling plan {plan.ulid}, moving {plan.full_path!s} to {new_path!s}")
-        shutil.move(str(plan.full_path), str(new_path))
 
     def do_postpone_plan(self, plan: Plan):
         assert plan is not None and plan.full_path is not None
@@ -497,12 +481,6 @@ class Planner:
             plans_base + "/execute",
             tags=[tag],
             endpoint=self.transition_to_in_progress,
-            methods=["POST"],
-        )
-        router.add_api_route(
-            plans_base + "/cancel",
-            tags=[tag],
-            endpoint=self.transition_to_canceled,
             methods=["POST"],
         )
 

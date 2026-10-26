@@ -45,8 +45,15 @@ spectrograph then exposes it. Every unit transition is an event in the plan file
   stage (`Autofocus`, `Acquisition`, `Spec`).
 - **Acquisition** (`control/acquisition.py`, tag `acquisition`): `PUT start_acquisition`
   generates a plan -- target, units, optional `focus_on_star`, no spectrograph -- writes it
-  straight into `in-progress/` and executes it; `GET acquisition_status` is a live table;
-  `PUT abort_acquisition`.
+  straight into `in-progress/` and executes it; `GET acquisition_status` is a live table.
+- **One workload at a time, one `PUT abort`** (`Controller.endpoint_abort`): it aborts the
+  workload in progress through every participant's own `abort`. There is no other way to
+  stop one -- `abort_acquisition` and `/plans/cancel` are gone.
+- **The plan token**: units and the spectrograph get the plan's ULID as `plan_id` and work
+  for that plan alone until aborted; a plan is refused while any of its units works for
+  another. A science plan ends when the spectrograph says it is done (its `completed`
+  notification), then control aborts the units; an acquisition holds its units until
+  `abort`; either fails, aborting everything, once fewer than `quorum` units remain.
 - Every wait is in `Timing`, and the unit API is injected: tests run the engine in
   milliseconds against scripted fake units (`tests/test_plan_execution.py`).
 
@@ -54,7 +61,7 @@ Design: `plans/control_acquisition_design.md` in mast-claude-config.
 
 ## Plan API routes (under `/mast/api/v1/control/plans/`)
 
-`GET /get`, `POST /execute`, `POST /postpone`, `POST /revive`, `POST /cancel`, `DELETE /delete`
+`GET /get`, `POST /execute`, `POST /postpone`, `POST /revive`, `DELETE /delete`. A plan in progress is stopped by control's `PUT /abort`.
 
 Utility: `python ../common/models/plans.py <plan-file.toml>` to parse and dump a plan as JSON.
 

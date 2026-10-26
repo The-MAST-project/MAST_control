@@ -79,6 +79,8 @@ class Timing:
     focus_seconds: float = 600.0
     unreachable_seconds: float = 30.0
     spec_poll_seconds: float = 20.0
+    #: The spectrograph's deadline: its exposure series, plus this, for overheads and readout.
+    spec_margin_seconds: float = 600.0
 
 
 class _UnitFailedError(Exception):
@@ -168,6 +170,7 @@ class PlanExecution:
         self.file_lock = threading.Lock()
         self._changed = threading.Condition()
         self.cancelled = threading.Event()  # an operator's abort
+        self._abort_done = threading.Event()  # ... and every participant told
         self._stop = threading.Event()  # every worker: the plan is over, one way or another
         self.units: dict[str, UnitRun] = {}
         self.outcome: Outcome = "running"
@@ -175,6 +178,12 @@ class PlanExecution:
         self.products: PlanProducts | None = None
         self.started_at = time.time()
         self.spec_started = False
+        self.quorum_reached = False
+        #: Every unit that reached guiding, in order: the plan's end aborts them all (6.6).
+        self.guided: list[str] = []
+        #: Set by the controller when the spectrograph says it is done with the plan (6.6).
+        self.spec_finished = threading.Event()
+        self.spec_errors: list[str] = []
         #: Why the plan stopped for want of units, when it did (5.5).
         self.quorum_lost: str | None = None
         self._terminated = threading.Event()
@@ -219,23 +228,30 @@ class PlanExecution:
             for name in names:
                 workers.submit(self._worker, self.units[name])
             verdict = self._await_verdict()
-            if verdict == "completed" and self._has_spectrograph():
-                verdict = self._spectrograph_phase() or verdict
-                if self.cancelled.is_set():
-                    verdict = "aborted"
-            if verdict == "failed":
-                # Every unit still in the plan, guiding ones included: a plan that lost its
-                # quorum during the exposure leaves no unit guiding for nothing.
-                every = self.spec_started
-                runs = [r for r in self.units.values() if every or r.state not in TERMINAL]
-                failures = self._abort_units(runs, "plan failed", every=every)
-                if self.spec_started and self._spec_api is not None:
-                    response = self._call(self._spec_api().put("abort"))
-                    if not _get(response, "succeeded", False):
-                        failures.append(f"spec: abort failed: {_get(response, 'errors')}")
-                if failures:
-                    self.event("abort-failures", failures)
-            # Workers still running at success keep running until now (5.5): the plan ends here.
+            if verdict == "completed":
+                self.quorum_reached = True
+                self.event(
+                    "quorum-reached", [", ".join(r.name for r in self.units.values() if r.state is UnitRunState.GUIDING)]
+                )
+                # The plan goes on: a science plan until the spectrograph has made its
+                # products, an acquisition until it is aborted -- its units keep working for
+                # it -- and either one fails as soon as fewer than `quorum` units remain (6.6).
+                held = self._spectrograph_phase() if self._has_spectrograph() else self._hold()
+                if held is not None:
+                    verdict = held
+                elif self.cancelled.is_set():
+                    # Aborted: a science plan cut short, an acquisition ended. An acquisition
+                    # that reached its quorum did what it was for.
+                    verdict = "aborted" if self._has_spectrograph() else "completed"
+            if verdict == "failed" or (verdict == "completed" and not self.cancelled.is_set()):
+                # The plan is over, and control ends it everywhere: every unit, guiding ones
+                # included -- they were working for it -- and the spectrograph if it was
+                # still at it. A science plan's spectrograph has already ended its own part.
+                self._end_everywhere("plan failed" if verdict == "failed" else "plan completed")
+            # Aborted: the plan ends once every participant has been told, not before.
+            if self.cancelled.is_set():
+                self._abort_done.wait(60)
+            # Workers still running until now (5.5): the plan ends here.
             self._stop.set()
             with self._changed:
                 self._changed.notify_all()
@@ -261,9 +277,9 @@ class PlanExecution:
         return spec is not None and spec.instrument is not None and self._spec_api is not None
 
     def _summary(self) -> list[str]:
-        guiding = [r.name for r in self.units.values() if r.state is UnitRunState.GUIDING]
-        failed = [r.name for r in self.units.values() if r.state in (UnitRunState.FAILED, UnitRunState.ABORTED)]
-        verb = "quorum reached" if len(guiding) >= self.quorum else "quorum not reached"
+        guiding = list(self.guided)
+        failed = [r.name for r in self.units.values() if r.state is UnitRunState.FAILED]
+        verb = "quorum reached" if self.quorum_reached else "quorum not reached"
         details = [self.quorum_lost] if self.quorum_lost else []
         details.append(f"{verb}: {len(guiding)} of {len(self.units)} guiding ({', '.join(guiding) or 'none'})")
         if failed:
@@ -309,12 +325,13 @@ class PlanExecution:
         with self._changed:
             self._changed.notify_all()
         failures = self._abort_units(list(self.units.values()), "aborted by operator", every=True)
-        if self.spec_started and self._spec_api is not None:
+        if self.spec_started and not self.spec_finished.is_set() and self._spec_api is not None:
             response = self._call(self._spec_api().put("abort"))
             if not _get(response, "succeeded", False):
                 failures.append(f"spec: abort failed: {_get(response, 'errors')}")
         if failures:
             self.event("abort-failures", failures)
+        self._abort_done.set()
         return failures
 
     def _abort_units(self, runs: list[UnitRun], reason: str, every: bool = False) -> list[str]:
@@ -345,6 +362,8 @@ class PlanExecution:
             run.state = state
             if errors:
                 run.errors.extend(errors)
+            if state is UnitRunState.GUIDING:
+                self.guided.append(run.name)
             self._changed.notify_all()
         if state is UnitRunState.FAILED:
             self.event(STATE_EVENT[state], [f"{run.name}: {e}" for e in run.errors] or [run.name])
@@ -436,17 +455,24 @@ class PlanExecution:
             if not all(str(r).startswith(COOLING_DOWN_REASON) for r in reasons):
                 raise _UnitFailedError("operational", "; ".join(str(r) for r in reasons))
 
-        # 3. Busy
+        # 3. Busy -- working for this plan already is not busy: a revived plan runs again
+        # under the same token, and its units may still hold it (6.6).
         why_busy = _get(status, "why_busy")
         if why_busy is None:
             raise _UnitFailedError("status", "busy state not reported")
+        owner = _get(status, "plan_id")
+        if owner is not None and owner != self.plan.ulid:
+            raise _UnitFailedError("busy", f"working on plan {owner}")
+        if owner == self.plan.ulid:
+            why_busy = {k: [f for f in v if f != "ExecutingPlan"] for k, v in why_busy.items()}
+            why_busy = {k: v for k, v in why_busy.items() if v}
         if why_busy:
             raise _UnitFailedError("busy", "; ".join(f"{owner}: {', '.join(flags)}" for owner, flags in why_busy.items()))
 
     def _focus_on_star(self, run: UnitRun, coordinates: dict) -> None:
         """Step 4."""
         self._set(run, UnitRunState.FOCUSING)
-        self._put(run, "focus_on_star", "focus_on_star", {"zenith": "false", **coordinates, "plan_ulid": self.plan.ulid})
+        self._put(run, "focus_on_star", "focus_on_star", {"zenith": "false", **coordinates, "plan_id": self.plan.ulid})
         deadline = time.monotonic() + self.timing.focus_seconds
         while True:
             focus = self._status(run, "focus_on_star", "focus_on_star_status")
@@ -466,7 +492,7 @@ class PlanExecution:
             run,
             "acquisition",
             "start_acquisition_and_guiding",
-            {**coordinates, "skip_sky": "true", "handover_automatically_to_guider": "true", "plan_ulid": self.plan.ulid},
+            {**coordinates, "skip_sky": "true", "handover_automatically_to_guider": "true", "plan_id": self.plan.ulid},
         )
         timeout = float(self.plan.timeout_to_guiding or 600)
         deadline = time.monotonic() + timeout
@@ -496,11 +522,67 @@ class PlanExecution:
 
     # --- the spectrograph (5.7) -----------------------------------------------------------
 
+    def spectrograph_finished(self, errors: list[str] | None = None) -> None:
+        """The spectrograph says it is done with this plan: its products are made, or it
+        failed. Idempotent: a notification sent again changes nothing (6.6)."""
+        if not self.spec_finished.is_set():
+            self.spec_errors = list(errors or [])
+            self.spec_finished.set()
+
+    def _end_everywhere(self, reason: str) -> None:
+        """Abort every unit of the plan, and the spectrograph if it has not ended its own part."""
+        failures = self._abort_units(list(self.units.values()), reason, every=True)
+        if self.spec_started and not self.spec_finished.is_set() and self._spec_api is not None:
+            response = self._call(self._spec_api().put("abort"))
+            if not _get(response, "succeeded", False):
+                failures.append(f"spec: abort failed: {_get(response, 'errors')}")
+        if failures:
+            self.event("abort-failures", failures)
+
+    def _quorum_holds(self, unreachable_since: dict[str, float]) -> bool:
+        """Drop the guiding units that stopped -- guider no longer engaged (a lost star still
+        being sought does not count), or unreachable for `unreachable_seconds` -- and say
+        whether `quorum` units are still guiding (5.5)."""
+        for name, run in self.units.items():
+            if run.state is not UnitRunState.GUIDING:
+                continue
+            response = self._call(self._unit_api(name).get("status"))
+            if _get(response, "succeeded", False):
+                unreachable_since.pop(name, None)
+                if "Guiding" in (_get(_get(response, "value"), "activities_verbal") or []):
+                    continue
+                why = "guiding: stopped"
+            else:
+                first = unreachable_since.setdefault(name, time.monotonic())
+                if time.monotonic() - first < self.timing.unreachable_seconds:
+                    continue
+                why = f"status: unreachable for {self.timing.unreachable_seconds:g} s"
+            self.event("unit-stopped-guiding", [name])
+            self._set(run, UnitRunState.FAILED, [why])
+        guiding = self.count(UnitRunState.GUIDING)
+        if guiding >= self.quorum:
+            return True
+        self.quorum_lost = f"quorum {self.quorum} lost: {guiding} of {len(self.units)} guiding"
+        return False
+
+    def _hold(self) -> Outcome | None:
+        """An acquisition, its quorum reached: its units keep working for it until it is
+        aborted. Returns "failed" if fewer than `quorum` remain first, None when aborted."""
+        unreachable_since: dict[str, float] = {}
+        while not self.cancelled.wait(self.timing.poll_seconds):
+            if not self._quorum_holds(unreachable_since):
+                return "failed"
+        return None
+
     def _spectrograph_phase(self) -> Outcome | None:
-        """Expose the spectrograph, while the quorum holds (5.7). Returns "failed" when it does
-        not: a guiding unit drops out -- its guider no longer engaged (a lost star it is still
-        looking for does not count), or unreachable for `unreachable_seconds` -- and fewer than
-        `quorum` remain. The exposure is then aborted with the plan."""
+        """Hand the spectrograph its assignment, under the plan's token, and wait for it to say
+        it is done (`spectrograph_finished`, from its notification) while the quorum holds.
+        Returns None when it is done, "failed" when it failed, the quorum was lost, or it went
+        silent past its deadline. Aborted: None, with `cancelled` set.
+
+        Backstops for a notification that never arrives (a restart loses the sender's queue):
+        a spectrograph whose status no longer carries this plan's token is done; and one
+        silent beyond its exposure series plus `spec_margin_seconds` has failed."""
         from common.models.assignments import Initiator, SpectrographAssignment
 
         assert self._spec_api is not None and self.plan.spec is not None
@@ -516,36 +598,39 @@ class PlanExecution:
             plan=self.plan,
             spec=self.plan.spec,
         )
-        response = self._call(spec.put("execute_assignment", json=assignment.model_dump(mode="json")))
+        response = self._call(
+            spec.put("execute_assignment", params={"plan_id": self.plan.ulid}, json=assignment.model_dump(mode="json"))
+        )
         if not _get(response, "succeeded", False):
             self.errors.append(f"spectrograph refused: {_get(response, 'errors')}")
             self.event("spec-refused", self.errors[-1:])
             return "failed"
         self.spec_started = True
         self.event("exposing", [str(self.plan.spec.instrument)])
+        series = (self.plan.spec.requested_exposure_duration or 0) * (self.plan.spec.requested_number_of_exposures or 1)
+        deadline = time.monotonic() + series + self.timing.spec_margin_seconds
         unreachable_since: dict[str, float] = {}
-        while not self.cancelled.wait(self.timing.spec_poll_seconds):
-            for name, run in self.units.items():
-                if run.state is not UnitRunState.GUIDING:
-                    continue
-                response = self._call(self._unit_api(name).get("status"))
-                if _get(response, "succeeded", False):
-                    unreachable_since.pop(name, None)
-                    if "Guiding" in (_get(_get(response, "value"), "activities_verbal") or []):
-                        continue
-                    why = "guiding: stopped during the exposure"
-                else:
-                    first = unreachable_since.setdefault(name, time.monotonic())
-                    if time.monotonic() - first < self.timing.unreachable_seconds:
-                        continue
-                    why = f"status: unreachable for {self.timing.unreachable_seconds:g} s during the exposure"
-                self.event("unit-stopped-guiding", [name])
-                self._set(run, UnitRunState.FAILED, [why])
-            guiding = self.count(UnitRunState.GUIDING)
-            if guiding < self.quorum:
-                self.quorum_lost = f"quorum {self.quorum} lost during the exposure: {guiding} of {len(self.units)} guiding"
+        while not self.cancelled.is_set():
+            if self.spec_finished.wait(self.timing.spec_poll_seconds):
+                break
+            if self.cancelled.is_set():
+                return None
+            if not self._quorum_holds(unreachable_since):
                 return "failed"
             status = _get(self._call(spec.get("status")), "value")
-            if status is not None and _get(status, "activities", 0) == 0:
-                return None
+            if status is not None and _get(status, "plan_id") != self.plan.ulid:
+                self.event("spec-done", ["the spectrograph no longer works for the plan; no notification came"])
+                self.spectrograph_finished()
+                break
+            if time.monotonic() >= deadline:
+                self.errors.append(f"spectrograph: no word within {series + self.timing.spec_margin_seconds:g} s")
+                self.event("spec-silent", self.errors[-1:])
+                return "failed"
+        if self.cancelled.is_set():
+            return None
+        if self.spec_errors:
+            self.errors.extend(self.spec_errors)
+            self.event("spec-failed", self.spec_errors)
+            return "failed"
+        self.event("spec-completed", [str(self.plan.spec.instrument)])
         return None
