@@ -86,7 +86,7 @@ flowchart LR
 	T1["Unit/spec process calls\nnotify_controller_about_task_acquisition_path(...)\n(common/tasks/notifications.py)"] --> T2["ControllerApi.put('task_acquisition_path_notification', data)"]
 	T2 --> T3["Controller.task_acquisition_path_notification\nPUT /mast/api/v1/control/task_acquisition_path_notification"]
 	T3 --> T4["Validate in-progress task id"]
-	T4 --> T5["Create symlink:\n<run_folder>/<initiator.hostname>/<subpath> -> src"]
+	T4 --> T5["Link into the execution's products folder:\nplans/products/PLAN_<ulid>/<start>/<Stage>/<producer>/<name> -> src"]
 	T5 --> T6["Used for product collection\n(no Django/SSE propagation)"]
 ```
 

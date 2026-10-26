@@ -41,12 +41,12 @@ The scheduler operates in two modes:
 | `too` | `bool` | Target of Opportunity flag; triggers preemption of running batch |
 | `approved` | `bool` | Set by capability owner before plan enters pending pool |
 | `production` | `bool` | If false, availability checks are relaxed (testing only) |
-| `quorum` | `int` | Minimum operational units required to proceed (default: 1) |
+| `quorum` | `int` | How many units must reach guiding for the plan to succeed (default: 1) |
 | `timeout_to_guiding` | `float` | Seconds to wait for units to reach guiding (default: 600) |
-| `requested_units` | `list[str]` | Unit names explicitly requested by the scientist |
-| `allocated_units` | `list[str]` | Unit names allocated by the scheduler |
-| `target` | `Target` | Target coordinates and exposure series parameters (see below) |
-| `spec_assignment` | `SpectrographModel` | Spectrograph configuration (see below) |
+| `requested_units` | `list[str]` | Unit specifiers requested by the scientist (`mast01`, `ns:1,3,5`), or `"any"`; never empty |
+| `scheduled_units` | `list[str]` | Unit names chosen by the scheduler; empty until it chooses |
+| `target` | `Target` | Target name and coordinates (see below) |
+| `spec` | `SpectrographModel` | Spectrograph configuration and the exposure series (see below) |
 | `constraints` | `ConstraintsModel` | Scheduling constraints (see below) |
 | `events` | `list[EventModel]` | Append-only history: `what`, `details`, `when` |
 
@@ -60,12 +60,17 @@ Plan state is not stored as a field — it is tracked by which filesystem subfol
 |-------|------|-------------|++
 | `ra_hours` | `float` | Right ascension in decimal hours |
 | `dec_degrees` | `float` | Declination in decimal degrees |
-| `requested_exposure_duration` | `float` | Preferred exposure duration (seconds, ≤ 3600) |
+
+**Exposure series** (`plan.spec`; moved there from `Target` in 2026-10, mast-claude-config `plans/control_acquisition_design.md` 3.2):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `requested_exposure_duration` | `float` | Preferred exposure duration (seconds, ≤ 3600); required with an `instrument` |
 | `max_exposure_duration` | `float` | Maximum acceptable exposure duration (seconds, ≤ 3600) |
 | `requested_number_of_exposures` | `int` | Number of consecutive exposures per batch (default: 1) |
 | `repeats` | `RepeatsModel` | Repetition schedule (see below) |
 
-**RepeatsModel** (`plan.target.repeats`):
+**RepeatsModel** (`plan.spec.repeats`):
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -74,7 +79,7 @@ Plan state is not stored as a field — it is tracked by which filesystem subfol
 
 ---
 
-**SpectrographModel** (`plan.spec_assignment`):
+**SpectrographModel** (`plan.spec`):
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -84,14 +89,14 @@ Plan state is not stored as a field — it is tracked by which filesystem subfol
 | `calibration` | `CalibrationSettings` | ThAr lamp and filter (see below) |
 | `settings` | `HighspecSettings \| DeepspecSettings` | Instrument-specific settings |
 
-**CalibrationSettings** (`plan.spec_assignment.calibration`):
+**CalibrationSettings** (`plan.spec.calibration`):
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `lamp_on` | `bool` | Whether the ThAr calibration lamp should be on (default: false) |
 | `filter` | `str` | ThAr filter ID; required when `lamp_on=true`; defaults to `"Empty"` |
 
-**HighspecSettings** (`plan.spec_assignment.settings`, HighSpec only):
+**HighspecSettings** (`plan.spec.settings`, HighSpec only):
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -126,9 +131,9 @@ Only operator or system action can move a plan to `failed`, `canceled`, `postpon
 
 ### 2.3 Repeatability and Series
 
-- **Runs per night** (`target.repeats.every`): controls how many times per night a plan is scheduled; values are `"Only once"`, `"Once per night"`, `"Twice per night"`, `"As much as possible"`; the scheduler checks the `events` list to count completions tonight
-- **Multi-night plans** (`target.repeats.nights`): number of nights the plan must be executed (1–100); no minimum spacing between nights is enforced
-- **Exposure series** (`target.requested_number_of_exposures`): all exposures occur within one batch; batch duration = `num_exposures × exposure_time + (num_exposures − 1) × readout_time`; `readout_time` is a configurable constant (default: 0, pending hardware characterization)
+- **Runs per night** (`spec.repeats.every`): controls how many times per night a plan is scheduled; values are `"Only once"`, `"Once per night"`, `"Twice per night"`, `"As much as possible"`; the scheduler checks the `events` list to count completions tonight
+- **Multi-night plans** (`spec.repeats.nights`): number of nights the plan must be executed (1–100); no minimum spacing between nights is enforced
+- **Exposure series** (`spec.requested_number_of_exposures`): all exposures occur within one batch; batch duration = `num_exposures × exposure_time + (num_exposures − 1) × readout_time`; `readout_time` is a configurable constant (default: 0, pending hardware characterization)
 
 ---
 
@@ -138,20 +143,20 @@ Only operator or system action can move a plan to `failed`, `canceled`, `postpon
 
 All plans in a batch must satisfy:
 
-- Same spectrograph (`spec_assignment.instrument`: `deepspec` or `highspec`)
-- HighSpec only: same disperser (`spec_assignment.settings.disperser`) — candidate plans with a different disperser cannot join the batch
+- Same spectrograph (`spec.instrument`: `deepspec` or `highspec`)
+- HighSpec only: same disperser (`spec.settings.disperser`) — candidate plans with a different disperser cannot join the batch
 
 ### 3.2 Exposure Time Negotiation
 
-- Batch exposure time = `max(target.requested_exposure_duration)` across all plans in the batch
-- Capped at `min(target.max_exposure_duration)` across all plans in the batch
-- A candidate plan may only join if its `target.max_exposure_duration ≥` current batch exposure time
+- Batch exposure time = `max(spec.requested_exposure_duration)` across all plans in the batch
+- Capped at `min(spec.max_exposure_duration)` across all plans in the batch
+- A candidate plan may only join if its `spec.max_exposure_duration ≥` current batch exposure time
 - Plans that cannot fit are skipped and remain pending
 
 ### 3.3 Calibration Lamp and Filter
 
-- `lamp_on` (batch) = `any(plan.spec_assignment.calibration.lamp_on)` — if any plan requests the lamp, it is on for all
-- `filter` (batch) = densest filter among lamp-on plans (`spec_assignment.calibration.filter`)
+- `lamp_on` (batch) = `any(plan.spec.calibration.lamp_on)` — if any plan requests the lamp, it is on for all
+- `filter` (batch) = densest filter among lamp-on plans (`spec.calibration.filter`)
 - Plans that requested a lighter filter receive denser attenuation — acceptable for pipeline calibration
 - ThAr lamp warmup/cooldown overhead: configurable constant (default: 0, pending characterization)
 
@@ -159,13 +164,14 @@ All plans in a batch must satisfy:
 
 The scheduler queries operational unit status before each batch. Units are candidates if they are deployed, not in maintenance mode, and responding.
 
-**Explicit unit list** (`requested_units` is non-empty):
+**Explicit unit list** (`requested_units` names units):
 - Intersect `requested_units` with currently operational units
 - If intersection size ≥ `quorum` → schedule, assign the intersection
 - If intersection size < `quorum` → plan is infeasible, skip
 
-**Scheduler-chosen units** (`requested_units` is empty):
-- Pool = operational units feeding the required spectrograph
+**Scheduler-chosen units** (`requested_units = "any"`):
+- Pool = every deployed unit not in maintenance. Every unit feeds both instruments, through
+  the common slit, so the spectrograph plays no part in choosing.
 - Assign units from pool up to what is available; proceed if pool size ≥ `quorum`
 - If pool size < `quorum` → plan is infeasible, skip
 
@@ -205,7 +211,7 @@ feasible = (
     .moon_phase(max=plan.constraints.moon.max_phase)  # percent
     .moon_separation(min=plan.constraints.moon.min_distance)  # degrees
     .quorum_available()  # operational units ≥ plan.quorum (see 3.4)
-    .repeats_not_exhausted()  # tonight's count < quota per plan.target.repeats.every
+    .repeats_not_exhausted()  # tonight's count < quota per plan.spec.repeats.every
     .plans
 )
 ```

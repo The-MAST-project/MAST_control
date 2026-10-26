@@ -28,19 +28,40 @@ python -m pytest tests/ -q -ra   # from the repo root, in the venv that has mast
 - **Don't import `app.py`**: it builds `Config()` at import. Every module under `control/`
   imports cleanly, and `test_imports.py` keeps it that way.
 
-## Plan Execution (`control/planning.py`)
+## Plan execution (`control/execution.py`)
 
-Phases tracked as `AssignmentActivities` bitflags:
-1. **Probing** — checks units and spec are detected and operational (quorum enforced; relaxed in non-production/debug mode)
-2. **Dispatching** — sends assignments to all operational units concurrently via `asyncio.gather`
-3. **WaitingForGuiding** — polls unit status every 20 s until all committed units report `UnitActivities.Guiding`, or `timeout_to_guiding` expires
-4. **ExposingSpec** — sends assignment to spectrograph, polls every 20 s until spec returns to `Idle`
+`PlanExecution` runs one plan: **one worker thread per unit**, each taking its unit through
+start-up, the operational and busy checks, an optional `focus_on_star`, and
+`start_acquisition_and_guiding`, until it is guiding -- PHD2 locked on a star -- or fails in its
+own words (`startup:`, `operational:`, `busy:`, `focus_on_star:`, `acquisition:`, `guiding:`,
+or `status:` when control could not learn the unit's state). The plan **succeeds when `quorum`
+units are guiding**, and fails as soon as too many have failed for that. A plan with a
+spectrograph then exposes it. Every unit transition is an event in the plan file.
 
-Any phase failure calls `Plan.abort()` which sends abort to all committed units and the spec.
+- `Controller.start_execution(plan, path)` starts one; there is one `in_progress` at a time, and
+  `last_execution` keeps the last for `acquisition_status`. A `Batch` is refused.
+- Each execution has a products folder, `plans/products/PLAN_<ulid>/<UTC start>/`; producers
+  notify control of their folders and `_handle_assignment_notification` links them in, by
+  stage (`Autofocus`, `Acquisition`, `Spec`).
+- **Acquisition** (`control/acquisition.py`, tag `acquisition`): `PUT start_acquisition`
+  generates a plan -- target, units, optional `focus_on_star`, no spectrograph -- writes it
+  straight into `in-progress/` and executes it; `GET acquisition_status` is a live table.
+- **One workload at a time, one `PUT abort`** (`Controller.endpoint_abort`): it aborts the
+  workload in progress through every participant's own `abort`. There is no other way to
+  stop one -- `abort_acquisition` and `/plans/cancel` are gone.
+- **The plan token**: units and the spectrograph get the plan's ULID as `plan_id` and work
+  for that plan alone until aborted; a plan is refused while any of its units works for
+  another. A science plan ends when the spectrograph says it is done (its `completed`
+  notification), then control aborts the units; an acquisition holds its units until
+  `abort`; either fails, aborting everything, once fewer than `quorum` units remain.
+- Every wait is in `Timing`, and the unit API is injected: tests run the engine in
+  milliseconds against scripted fake units (`tests/test_plan_execution.py`).
+
+Design: `plans/control_acquisition_design.md` in mast-claude-config.
 
 ## Plan API routes (under `/mast/api/v1/control/plans/`)
 
-`GET /get`, `POST /execute`, `POST /postpone`, `POST /revive`, `POST /cancel`, `DELETE /delete`
+`GET /get`, `POST /execute`, `POST /postpone`, `POST /revive`, `DELETE /delete`. A plan in progress is stopped by control's `PUT /abort`.
 
 Utility: `python ../common/models/plans.py <plan-file.toml>` to parse and dump a plan as JSON.
 

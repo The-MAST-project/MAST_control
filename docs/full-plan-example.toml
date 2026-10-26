@@ -1,253 +1,232 @@
 # =============================================================================
-# MAST Plan — fully populated example
+# MAST plan -- every field
 # =============================================================================
-# File naming convention: PLAN_<ULID>.toml
-# Example: PLAN_01HXYZ1234567890ABCDEFGH.toml
-#
-# All fields are shown below. Fields marked "(optional)" may be omitted; their
-# default values are noted in the comments.
-# =============================================================================
+# A plan file is named PLAN_<ULID>.toml. Each field is described above it. A field that has a
+# default is commented out, showing its default and what it allows: uncomment it only to
+# change it. A table whose fields are all commented out is commented out with them -- a plan
+# file carries no empty tables. The minimal plan is in minimal-plan-example.toml.
 
 
-# --- Identity & ownership ---
+# --- The plan ----------------------------------------------------------------
 
-# ULID — set automatically when the plan is created. Do not edit by hand.
-ulid = "01HXYZ1234567890ABCDEFGH"
+# The plan's id. Taken from the file name, PLAN_<ULID>.toml, which wins if they differ; a file
+# whose name carries none gets a new one. Leave it out.
+# ulid = "01JAD8Q4ZK7V3M2XG9T6R5N0HB"
 
-# Owner: the username of the observer who submitted this plan.
-owner = "jdoe"
+# Who submitted the plan: a user id, filled in by the web interface.
+# owner = "jdoe"
 
+# The plan's scientific priority. 1 (lowest) to 10 (highest).
+# merit = 1
 
-# --- Scheduling priority ---
+# Target of Opportunity: may pre-empt the plan in progress. true | false. Plan managers only.
+# too = false
 
-# Merit score: integer 1–10. Higher = higher scheduling priority.
-merit = 7
+# Approved for execution: set by a plan manager, never in the file by hand. true | false.
+# approved = false
 
+# A production plan: false relaxes the availability checks, for testing only. true | false.
+# production = true
 
-# --- Flags ---
-
-# autofocus: perform an autofocus sequence before acquisition begins.
-# Default: false
-autofocus = true
-
-# too: Target of Opportunity — preempts queued plans when set to true.
-# Default: false
-too = false
-
-# approved: set by a plan manager after review. Do not set manually.
-# Default: false
-approved = false
-
-# production: when false, availability checks are relaxed (testing only).
-# Default: true
-production = true
+# A mockup: scheduled, never executed. For testing the scheduler. true | false.
+# mockup = false
 
 
-# --- Timing ---
+# --- Units ---------------------------------------------------------------------
 
-# timeout_to_guiding: how long (seconds) to wait for the guiding loop to lock
-# before aborting. Range: 0–600. Default: 600
-timeout_to_guiding = 300
+# The units to observe with: unit specifiers, or the word "any". Required; never empty.
+#   "mast01"      one unit, by name
+#   "ns:1,3,5"    units 1, 3 and 5 at site ns
+#   "ns:10-17"    a range of units at site ns
+#   "ns:north:2"  the 2nd unit of building north at site ns
+#   "any"         every unit deployed and not in maintenance (then also give `quorum`)
+requested_units = ["mast01", "mast03", "mast05"]
+
+# The fewest units the plan needs to continue. It does not start with fewer eligible units;
+# it succeeds once this many are guiding; and it is aborted as soon as fewer remain -- units
+# failing on their way to guiding, or dropping out of guiding during the exposure.
+# 1 <= quorum <= the number of units requested.
+# quorum = 1
+
+# The units the scheduler chose, from those requested. Filled in by the scheduler; leave it
+# out. Empty until it chooses, and the plan runs on what it requested.
+# scheduled_units = []
+
+# Seconds each unit has, from the start of its acquisition, to lock on a star. A unit that
+# has not is aborted and fails. 0 < seconds <= 600.
+# timeout_to_guiding = 600.0
+
+# Focus each unit on a star near the target before acquiring it (focus_on_star). true | false.
+# autofocus = false
 
 
-# --- Unit assignment ---
+# --- The target ----------------------------------------------------------------
 
-# required_units: number of units the scheduler must allocate for this plan.
-required_units = 2
-
-# allocated_units: filled in by the scheduler at runtime. Do not set manually.
-allocated_units = []
-
-# quorum: minimum number of operational units required for the plan to proceed.
-# If fewer units are available at execution time the plan is deferred.
-# Default: 1
-quorum = 2
-
-
-# =============================================================================
-# [target]  — the astronomical object to observe
-# =============================================================================
+# What to observe, in J2000. Required.
 [target]
 
-# Human-readable name (used in filenames and logs).
-name = "NGC 1275"
-
-# Visual magnitude of the target (informational).
-magnitude = 11.9
-
-# Right Ascension — sexagesimal ("HH:MM:SS.ss") or decimal hours (float).
+# Right ascension: sexagesimal hours "HH:MM:SS.s" (colon- or space-separated), or decimal
+# hours. 0 <= RA < 24. Required, unless `name` is given instead.
 ra_hours = "03:19:48.16"
 
-# Declination — sexagesimal ("+DD:MM:SS.s") or decimal degrees (float).
+# Declination: sexagesimal degrees "+DD:MM:SS.s" (colon- or space-separated), or decimal
+# degrees. -90 to +90. Required, unless `name` is given instead.
 dec_degrees = "+41:30:42.1"
 
-# --- Exposure settings ---
+# The target's name. With both coordinates given, a label. Without them, it is resolved once,
+# when the plan is submitted (TNS, then SIMBAD/NED/VizieR through Sesame), and the plan is
+# stored with the coordinates it resolved to and a "resolved" event. A name that does not
+# resolve refuses the plan.
+# name = "NGC 1275"
 
-# Total requested exposure duration per visit, in seconds. Range: 0–3600.
-requested_exposure_duration = 1800.0
+# The target's visual magnitude. For information.
+# magnitude = 11.9
 
-# Maximum allowed single-frame exposure time, in seconds. Range: 0–3600.
-# The system may split requested_exposure_duration into multiple frames.
-max_exposure_duration = 600.0
+# The science this plan is for. Free text, for organising the data.
+# [target.science]
 
-# Number of exposures to take per visit. Default: 1
-requested_number_of_exposures = 3
+# The science case, e.g. "Spectroscopy", "Radial velocity monitoring".
+# case = "Spectroscopy"
 
-# --- Science classification ---
-[target.science]
-
-# Science case — free-form label used for data organization.
-# Common values: "Photometry", "Spectroscopy", "Transient", "Monitoring"
-case = "Spectroscopy"
-
-# Scientific classification of the target.
-# Common values: "Galaxy", "Star", "AGN", "SN", "GRB", "Variable"
-classification = "AGN"
-
-# --- Repeat schedule ---
-[target.repeats]
-
-# How often per night should this target be revisited?
-# Options: "Only once" | "Once per night" | "Twice per night" | "As much as possible"
-# Default: "Only once"
-every = "Once per night"
-
-# For how many consecutive nights should the plan be rescheduled? Range: 1–100.
-# Default: 1
-nights = 7
+# The target's classification, e.g. "AGN", "Star", "SN", "WD Binary RV".
+# classification = "AGN"
 
 
-# =============================================================================
-# [constraints]  — observing constraints; all sub-sections are optional
-# =============================================================================
+# --- The spectrograph ------------------------------------------------------------
+# A plan with no spectrograph `instrument` -- this table left out, or written without one --
+# only acquires: the units acquire the target and guide on it, no spectrum is taken, and the
+# plan completes once `quorum` units are guiding. That is the plan control generates for
+# `start_acquisition`. With an `instrument`, the spectrograph exposes once `quorum` units are
+# guiding, and the plan completes when the exposure series does.
 
-# --- Moon constraints ---
-[constraints.moon]
+# [spec]
 
-# Maximum allowed moon illumination at observation time, in percent.
-# 0 = new moon, 100 = full moon. Range: 0–100.
-max_phase = 40.0
+# Which spectrograph: "highspec" | "deepspec". None, the default: no spectrum, the plan only
+# acquires.
+# instrument = "highspec"
 
-# Minimum required angular separation between the target and the moon, in degrees.
-# Range: 0–180.
-min_distance = 30.0
+# Seconds per exposure. Required with an `instrument`. 0 < seconds <= 3600.
+# requested_exposure_duration = 1800.0
 
-# --- Airmass constraint ---
-[constraints.airmass]
+# Exposures in the series. >= 1.
+# requested_number_of_exposures = 1
 
-# Maximum allowed airmass. 1.0 = zenith; higher = closer to horizon.
-# Range: 1.0–3.0
-max = 1.8
+# The longest single exposure this plan accepts, in seconds: a plan is not batched with
+# others exposing longer. 0 < seconds <= 3600; none for no limit.
+# max_exposure_duration = 600.0
 
-# --- Seeing constraint ---
-[constraints.seeing]
+# Calibration: the ThAr lamp.
+# [spec.calibration]
 
-# Maximum allowed seeing (atmospheric turbulence), in arcseconds. Range: 0–5.
-max = 2.5
+# Light the ThAr lamp during the exposure. true | false.
+# lamp_on = false
 
-# --- Time window constraint ---
-[constraints.time_window]
+# The ThAr filter, required with the lamp on: one of the site's ThAr filters (the web
+# interface offers them), e.g. "ND1000", "ND3000".
+# filter = "ND3000"
 
-# start_mode: when the observing window opens.
-# Options: "Anytime" | "Date" | "DateTime"
-start_mode = "DateTime"
+# When the exposure series is scheduled again.
+# [spec.repeats]
 
-# end_mode: when the observing window closes.
-# Options: "Anytime" | "Date" | "DateTime" | "After"
-end_mode = "After"
+# How often per night. "Only once" | "Once per night" | "Twice per night" | "As much as possible".
+# every = "Only once"
 
-# start: the earliest the plan may execute (ISO 8601). Used when start_mode is
-# "Date" or "DateTime". Omit or set to null for "Anytime".
-start = "2026-04-10T21:00:00"
+# For how many nights. 1 to 100.
+# nights = 1
 
-# end: the latest the plan may execute (ISO 8601). Used when end_mode is
-# "Date" or "DateTime". Omit or set to null for other modes.
-# end = "2026-04-17T04:00:00"
+# The instrument's own settings. Not shown in the web interface; leave them out unless the
+# instrument's engineer says otherwise. For deepspec, `camera` is a table per band.
+# [spec.settings]
 
-# end_after_nights: used when end_mode is "After". The window closes after this
-# many nights from the first execution. Range: 1–100.
-end_after_nights = 7
+# Highspec's disperser. Required in these settings. "Ca" | "Mg" | "Halpha" | "Empty".
+# disperser = "Halpha"
 
+# Highspec's camera (Newton).
+# [spec.settings.camera]
 
-# =============================================================================
-# [spec_assignment]  — spectrograph configuration (optional section)
-# Omit this entire section if no spectrograph is needed.
-# =============================================================================
-[spec_assignment]
+# Seconds per frame.
+# exposure_duration = 5.0
 
-# instrument: which spectrograph to use.
-# Options: "highspec" | "deepspec"
-instrument = "highspec"
+# Frames per exposure.
+# number_of_exposures = 1
 
-# --- Calibration ---
-[spec_assignment.calibration]
+# The Andor acquisition mode.
+# acquisition_mode = 1
 
-# lamp_on: illuminate the calibration lamp during the exposure.
-lamp_on = false
+# "conventional" | "em".
+# amplifier_mode = "conventional"
 
-# filter: calibration filter name. Required when lamp_on is true.
-# filter = "ThAr"
+# EM gain, with amplifier_mode = "em".
+# em_gain = 254
 
-# --- Highspec camera settings ---
-# Use this section when instrument = "highspec".
-[spec_assignment.settings]
+# Pre-amplifier gain index.
+# pre_amp_gain = 0
 
-# disperser: which grating/element is in the beam.
-# Options: "Ca" | "Mg" | "Halpha" | "Empty"
-disperser = "Halpha"
+# Horizontal shift speed. "3.0 MHz" | "1.0 MHz" | "0.05 MHz".
+# horizontal_shift_speed = "0.05 MHz"
 
-# Newton EMCCD camera settings
-[spec_assignment.settings.camera]
+# Whether the camera takes part. true | false.
+# camera_enabled = true
 
-# acquisition_mode: 0 = single scan, 1 = kinetic series.
-acquisition_mode = 0
+# Binning. Each >= 1.
+# [spec.settings.camera.binning]
+# x = 1
+# y = 1
 
-# em_gain: electron-multiplying gain. 0 = conventional CCD mode.
-em_gain = 100
-
-# pre_amp_gain: pre-amplifier gain index. Options: 0 | 1 | 2
-pre_amp_gain = 2
-
-# exposure_duration: per-frame exposure time in seconds (overrides target value
-# for the spectrograph channel).
-exposure_duration = 300.0
-
-# number_of_exposures: frames per visit for the spectrograph. Default: 1
-number_of_exposures = 1
-
-# Binning (optional — omit to use detector default)
-[spec_assignment.settings.camera.binning]
-x = 1
-y = 1
-
-# Region of interest (optional — omit to use full frame)
-[spec_assignment.settings.camera.roi]
-hstart = 1
-hend  = 512
-vstart = 256
-vend  = 768
-
-# Detector temperature control (optional)
-[spec_assignment.settings.camera.temperature]
-# set_point: target temperature in °C (negative values are typical for cooling).
-set_point = -70
-# cooler_mode: 0 = off, 1 = on.
-cooler_mode = 1
-
-# Shutter timing (optional — fine-tune mechanical shutter behaviour)
-[spec_assignment.settings.camera.shutter]
-opening_time = 50   # milliseconds
-closing_time  = 50  # milliseconds
+# Cooling, in degrees C.
+# [spec.settings.camera.temperature]
+# regular_set_point = -10
+# science_set_point = -85
+# cooler_mode = 0
 
 
-# =============================================================================
-# [[events]]  — append-only execution log written by the system at runtime.
-# Do not add entries manually; they are appended automatically.
-# =============================================================================
-[[events]]
-what    = "plan created"
-details = ["Submitted via web interface"]
+# --- Constraints ---------------------------------------------------------------
+# When the plan may be observed. Each table is optional; leave out what does not matter.
 
-[[events]]
-what    = "approved"
-details = ["Approved by operator jane"]
+# The Moon.
+# [constraints.moon]
+
+# The brightest Moon allowed, in percent illuminated. 0 (new) to 100 (full).
+# max_phase = 50.0
+
+# The closest the Moon may be, in degrees. 0 to 180.
+# min_distance = 30.0
+
+# Airmass.
+# [constraints.airmass]
+
+# The highest airmass allowed. 1.0 (zenith) to 3.0.
+# max = 2.0
+
+# Seeing.
+# [constraints.seeing]
+
+# The worst seeing allowed, in arcsec. 0 to 5.0.
+# max = 2.0
+
+# The time window the plan may run in.
+# [constraints.time_window]
+
+# When the window opens. "Anytime" | "Date" | "DateTime".
+# start_mode = "Anytime"
+
+# The opening date (start_mode = "Date") or UTC date and time ("DateTime").
+# start = 2026-11-01
+
+# When the window closes. "Anytime" | "Date" | "DateTime" | "After" (end_after_nights).
+# end_mode = "Anytime"
+
+# The closing date (end_mode = "Date") or UTC date and time ("DateTime").
+# end = 2026-11-30
+
+# With end_mode = "After": the window closes after this many nights. 1 to 100.
+# end_after_nights = 7
+
+
+# --- Events ----------------------------------------------------------------------
+# The plan's log, appended by MAST_control as things happen: submitted, resolved, executing,
+# each unit's progress, completed / failed / aborted. Never written by hand.
+# [[events]]
+# what = "submitted"
+# details = []
+# when = "2026-10-25T12:00:00+00:00"

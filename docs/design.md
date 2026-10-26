@@ -71,7 +71,7 @@ Control architecture (implications for scheduler)
 Plans, TOML fields and scheduler inputs
 
 - The scheduler consumes Plans (TOML + MongoDB events). Important plan fields the scheduler requires:
-  - ulid, status (Approved), merit, quorum, timeout_to_guiding, autofocus, spec.instrument, spec.exposure, constraints (airmass, moon.min_distance/max_phase, seeing), constraints.time_window, observations_requested, observations_completed, run_folder, toml_file
+  - ulid, status (Approved), merit, quorum, timeout_to_guiding, autofocus, spec.instrument, spec.exposure, constraints (airmass, moon.min_distance/max_phase, seeing), constraints.time_window, observations_requested, observations_completed, toml_file
 - Only Plans in Approved (eligible) state are considered for batch formation. Draft/Submitted/Rejected are ignored by scheduler.
 - The scheduler must update plan TOML and also emit MongoDB events (hybrid logging) when state changes occur (scheduled, succeeded, failed).
 
