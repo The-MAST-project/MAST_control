@@ -29,8 +29,9 @@ from typing import Any, Literal
 from common.api import UnitApi
 from common.mast_logging import get_logger
 from common.models.events import EventModel
+from common.models.latest import AcquisitionState
 from common.models.plans import Plan, PlanProducts
-from common.models.statuses import COOLING_DOWN_REASON, AcquisitionState
+from common.models.statuses import COOLING_DOWN_REASON
 
 logger = get_logger(__name__)
 
@@ -476,7 +477,7 @@ class PlanExecution:
         deadline = time.monotonic() + self.timing.focus_seconds
         while True:
             focus = self._status(run, "focus_on_star", "focus_on_star_status")
-            if not _get(focus, "active", False):
+            if not _get(focus, "running", False):
                 break
             if time.monotonic() >= deadline:
                 raise self._timed_out(run, "focus_on_star", self.timing.focus_seconds)
@@ -501,9 +502,9 @@ class PlanExecution:
             status = self._status(run, "acquisition")
             handed_over = handed_over or "Guiding" in (_get(status, "activities_verbal") or [])
             step = "guiding" if handed_over else "acquisition"
-            outcome = _get(status, "acquisition")
+            outcome = _get(_get(status, "latest"), "acquisition")
             if outcome is None:
-                raise _UnitFailedError("status", "unit does not report acquisition outcome")
+                raise _UnitFailedError("status", "unit does not report its latest acquisition")
             state = _get(outcome, "state")
             errors = list(_get(outcome, "errors") or [])
             if state == AcquisitionState.GUIDING and handed_over and _get(status, "guiding", False):

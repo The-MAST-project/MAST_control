@@ -43,12 +43,12 @@ def status(
         **extra,
     }
     if acquisition != "absent":
-        s["acquisition"] = acquisition
+        s["latest"] = {"acquisition": acquisition}
     return s
 
 
 def outcome(state, errors=None) -> dict:
-    return {"state": state, "errors": errors or [], "started_at": "t"}
+    return {"state": state, "errors": errors or [], "started": "t"}
 
 
 READY = status()
@@ -61,7 +61,7 @@ class FakeUnit:
 
     def __init__(self, statuses, focus=None, refuse: dict | None = None, abort_fails=False, unreachable=0):
         self.statuses = list(statuses)
-        self.focus = list(focus or [{"active": False, "outcome": "solved", "errors": []}])
+        self.focus = list(focus or [{"running": False, "outcome": "solved", "errors": []}])
         self.refuse = refuse or {}
         self.abort_fails = abort_fails
         self.unreachable = unreachable  # this many status reads fail first
@@ -234,7 +234,7 @@ class TestOneUnit:
             ([status(operational=False)], "operational: not operational, no reason given"),
             ([status(why_busy={"unit": ["Autofocusing"]})], "busy: unit: Autofocusing"),
             ([{**READY, "why_busy": None}], "status: busy state not reported"),
-            ([READY, status()], "status: unit does not report acquisition outcome"),
+            ([READY, status()], "status: unit does not report its latest acquisition"),
             ([READY, status(acquisition=outcome("failed", ["sky: no solution"]))], "acquisition: sky: no solution"),
         ],
     )
@@ -252,14 +252,14 @@ class TestOneUnit:
 
 class TestFocusOnStar:
     def test_solved_goes_on_to_acquire(self, site, plans):
-        unit = FakeUnit([READY, LOCKED], focus=[{"active": True}, {"active": False, "outcome": "solved"}])
+        unit = FakeUnit([READY, LOCKED], focus=[{"running": True}, {"running": False, "outcome": "solved"}])
         execution = make(plans, site, {"mast01": unit}, autofocus=True)
         assert run(execution) == "completed"
         assert unit.put_methods()[:2] == ["focus_on_star", "start_acquisition_and_guiding"]
         assert dict(unit.puts[0][1])["zenith"] == "false"
 
     def test_not_solved_fails_with_its_errors(self, site, plans):
-        unit = FakeUnit([READY], focus=[{"active": False, "outcome": "failed", "errors": ["no isolated star"]}])
+        unit = FakeUnit([READY], focus=[{"running": False, "outcome": "failed", "errors": ["no isolated star"]}])
         execution = make(plans, site, {"mast01": unit}, autofocus=True)
         assert run(execution) == "failed"
         assert execution.units["mast01"].errors == ["focus_on_star: no isolated star"]
