@@ -30,6 +30,7 @@ from common.models.statuses import (
     BaseStatus,
     BasicUnitStatus,
     ControllerStatus,
+    FullUnitStatus,
     SitesStatus,
     SiteStatus,
     SpecStatus,
@@ -849,6 +850,54 @@ class Controller(Activities):
         with self.lock:
             return CanonicalResponse(value=self.status_cache[site_name]["units"][unit_name].value)
 
+    def _unit_lifecycle_refusal(self, site_name: str, unit_name: str, action: Literal["startup", "shutdown"]) -> str | None:
+        """Why `action` must not be sent to this unit, or None when it may.
+
+        Shutting a unit down also needs it to be idle, read from the cached status: a page
+        that has been open a while can offer the button for a unit that has since started
+        observing. `why_busy` of None is UNKNOWN (an old unit, or one not started up), and
+        unknown is refused, not taken for idle.
+        """
+        site = next((s for s in self.managed_sites() if s.name == site_name), None)
+        if site is None:
+            return f"site '{site_name}' is not managed by this controller"
+        if unit_name not in site.deployed_units:
+            return f"unit '{unit_name}' is not deployed at site '{site_name}'"
+        if unit_name in site.units_in_maintenance:
+            return f"unit '{unit_name}' is in maintenance"
+        if action != "shutdown":
+            return None
+
+        with self.lock:
+            cached = self.status_cache.get(site_name, {}).get("units", {}).get(unit_name)
+            status = cached.value if cached is not None else None
+        if not isinstance(status, FullUnitStatus):
+            return f"unit '{unit_name}' has no full status; cannot tell whether it is busy"
+        if status.why_busy is None:
+            return f"unit '{unit_name}': busy status unknown"
+        if status.why_busy:
+            reasons = "; ".join(f"{owner}: {', '.join(why)}" for owner, why in status.why_busy.items())
+            return f"unit '{unit_name}' is busy ({reasons})"
+        return None
+
+    async def _unit_lifecycle(
+        self, site_name: str, unit_name: str, action: Literal["startup", "shutdown"]
+    ) -> CanonicalResponse:
+        refusal = self._unit_lifecycle_refusal(site_name, unit_name, action)
+        if refusal is not None:
+            logger.warning(f"{action} of {site_name}:{unit_name} refused: {refusal}")
+            return CanonicalResponse(errors=[refusal])
+        logger.info(f"{action} of {site_name}:{unit_name} requested")
+        return await UnitApi(hostname=unit_name).put(action)
+
+    async def endpoint_unit_startup(self, site_name: str, unit_name: str) -> CanonicalResponse:
+        """Tell a deployed unit to start up (the unit's own `startup`)."""
+        return await self._unit_lifecycle(site_name, unit_name, "startup")
+
+    async def endpoint_unit_shutdown(self, site_name: str, unit_name: str) -> CanonicalResponse:
+        """Tell a deployed, idle unit to shut down (the unit's own `shutdown`)."""
+        return await self._unit_lifecycle(site_name, unit_name, "shutdown")
+
     def endpoint_power_switch_status(self, site_name: str, unit_name: str) -> CanonicalResponse:
         if site_name not in self.power_switches or unit_name not in self.power_switches[site_name]:
             return CanonicalResponse(errors=[f"no power_switch for {site_name=}, {unit_name=}"])
@@ -1187,6 +1236,18 @@ class Controller(Activities):
             base_path + "/unit/{site_name}/{unit_name}/status",
             tags=[tag],
             endpoint=self.endpoint_unit_status,
+        )
+        router.add_api_route(
+            base_path + "/unit/{site_name}/{unit_name}/startup",
+            tags=[tag],
+            endpoint=self.endpoint_unit_startup,
+            methods=["PUT"],
+        )
+        router.add_api_route(
+            base_path + "/unit/{site_name}/{unit_name}/shutdown",
+            tags=[tag],
+            endpoint=self.endpoint_unit_shutdown,
+            methods=["PUT"],
         )
 
         tag = "Controller"
