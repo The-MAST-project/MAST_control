@@ -783,8 +783,12 @@ class Controller(Activities):
                             self.power_switches[site_name][unit_name].get_outlet_state("Computer") or False
                         )
 
-                if site_cache["spec"]:
-                    spec_status = site_cache["spec"].value
+                # An unreachable or unparseable spectrograph is cached as a bare `BaseStatus`
+                # (see `_fetch_status`), which has no `powered`: only a real `SpecStatus` is
+                # reported as is.
+                cached_spec = site_cache["spec"].value if site_cache["spec"] else None
+                if isinstance(cached_spec, SpecStatus):
+                    spec_status = cached_spec
                     spec_status.powered = True
                 else:
                     spec_status = SpecStatus(
