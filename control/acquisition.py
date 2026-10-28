@@ -27,7 +27,7 @@ from common.models.plans import Plan, plan_to_toml
 from common.models.statuses import COOLING_DOWN_REASON
 from common.models.targets import resolve_target
 from common.object_resolver import ObjectNameError
-from common.parsers import ANY_UNITS, DEC_PATTERN, RA_PATTERN
+from common.parsers import ANY_UNITS
 from control.execution import PlanExecution, UnitRunState, _get
 
 if TYPE_CHECKING:
@@ -127,10 +127,11 @@ class Acquisitions:
             list[str],
             Query(min_length=1, description="Unit specifiers (`mast01`, `ns:1,3,5`), or `any`."),
         ],
-        ra_j2000_hours: Annotated[str | None, Query(pattern=RA_PATTERN)] = None,
-        dec_j2000_degs: Annotated[str | None, Query(pattern=DEC_PATTERN)] = None,
-        object_name: Annotated[str | None, Query(description="Resolved when the coordinates are not both usable.")] = None,
-        autofocus_on_star: bool = False,
+        ra_j2000_hours: Annotated[str | None, Query(description="Sexagesimal (space or colon separated) | decimal")] = None,
+        dec_j2000_degs: Annotated[str | None, Query(description="Sexagesimal (space or colon separated) | decimal")] = None,
+        object_name: Annotated[
+            str | None, Query(description="Resolved (only if the coordinates are not both usable).")
+        ] = None,
         quorum: Annotated[
             int | None,
             Query(ge=1, description="Defaults to the number of units; required with `units=any`."),
@@ -138,6 +139,7 @@ class Acquisitions:
     ) -> CanonicalResponse:
         """Take ``units`` to one sky position and into guiding: a generated plan, executed
         at once. Answers with the plan's ULID; watch `acquisition_status`."""
+        autofocus_on_star = True
         plan = self.generate(units, ra_j2000_hours, dec_j2000_degs, object_name, autofocus_on_star, quorum)
         if isinstance(plan, list):
             return CanonicalResponse(errors=plan)
@@ -178,7 +180,7 @@ class Acquisitions:
 
     def add_routes(self, router) -> None:
         base = Const.BASE_CONTROL_PATH
-        tag = "acquisition"
+        tag = "Acquisition"
         router.add_api_route(
             base + "/start_acquisition", tags=[tag], endpoint=self.endpoint_start_acquisition, methods=["PUT"]
         )
