@@ -31,7 +31,7 @@ from common.mast_logging import get_logger
 from common.models.events import EventModel
 from common.models.latest import AcquisitionState
 from common.models.plans import Plan, PlanProducts
-from common.models.statuses import COOLING_DOWN_REASON
+from common.models.statuses import operational_but_for_cooling
 
 logger = get_logger(__name__)
 
@@ -79,6 +79,11 @@ class Timing:
     startup_seconds: float = 600.0
     focus_seconds: float = 600.0
     unreachable_seconds: float = 30.0
+    #: The HTTP timeout on a PUT to a route the unit declares `autostartup` (`focus_on_star`,
+    #: `start_acquisition_and_guiding`): it may start the unit up first, waiting up to the
+    #: unit's `seconds_to_autostartup` (120 s by default). Longer than that, so control reads
+    #: the unit's own reason rather than a bare timeout.
+    autostartup_call_seconds: float = 150.0
     spec_poll_seconds: float = 20.0
     #: The spectrograph's deadline: its exposure series, plus this, for overheads and readout.
     spec_margin_seconds: float = 600.0
@@ -410,8 +415,8 @@ class PlanExecution:
                 raise _UnitFailedError("status", f"unreachable for {self.timing.unreachable_seconds:g} s")
             self._pause(self.timing.poll_seconds)
 
-    def _put(self, run: UnitRun, step: str, method: str, params: dict | None = None) -> None:
-        response = self._call(self._unit_api(run.name).put(method, params=params))
+    def _put(self, run: UnitRun, step: str, method: str, params: dict | None = None, timeout: float | None = None) -> None:
+        response = self._call(self._unit_api(run.name).put(method, params=params, timeout=timeout))
         if not _get(response, "succeeded", False):
             raise _UnitFailedError(step, "; ".join(_get(response, "errors") or [f"{method} refused, no reason given"]))
 
@@ -449,12 +454,11 @@ class PlanExecution:
             raise _UnitFailedError("startup", f"opstate is {opstate}")
 
         # 2. Operational, or only cooling
-        if not _get(status, "operational", False):
-            reasons = _get(status, "why_not_operational") or []
+        reasons = _get(status, "why_not_operational") or []
+        if not operational_but_for_cooling(_get(status, "operational", False), reasons):
             if not reasons:
                 raise _UnitFailedError("operational", "not operational, no reason given")
-            if not all(str(r).startswith(COOLING_DOWN_REASON) for r in reasons):
-                raise _UnitFailedError("operational", "; ".join(str(r) for r in reasons))
+            raise _UnitFailedError("operational", "; ".join(str(r) for r in reasons))
 
         # 3. Busy -- working for this plan already is not busy: a revived plan runs again
         # under the same token, and its units may still hold it (6.6).
@@ -473,7 +477,13 @@ class PlanExecution:
     def _focus_on_star(self, run: UnitRun, coordinates: dict) -> None:
         """Step 4."""
         self._set(run, UnitRunState.FOCUSING)
-        self._put(run, "focus_on_star", "focus_on_star", {"zenith": "false", **coordinates, "plan_id": self.plan.ulid})
+        self._put(
+            run,
+            "focus_on_star",
+            "focus_on_star",
+            {"zenith": "false", **coordinates, "plan_id": self.plan.ulid},
+            timeout=self.timing.autostartup_call_seconds,
+        )
         deadline = time.monotonic() + self.timing.focus_seconds
         while True:
             focus = self._status(run, "focus_on_star", "focus_on_star_status")
@@ -494,6 +504,7 @@ class PlanExecution:
             "acquisition",
             "start_acquisition_and_guiding",
             {**coordinates, "skip_sky": "true", "handover_automatically_to_guider": "true", "plan_id": self.plan.ulid},
+            timeout=self.timing.autostartup_call_seconds,
         )
         timeout = float(self.plan.timeout_to_guiding or 600)
         deadline = time.monotonic() + timeout
