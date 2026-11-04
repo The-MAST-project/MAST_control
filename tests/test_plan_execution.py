@@ -20,7 +20,7 @@ from common.models.plans import Plan, plan_to_toml
 from control.execution import PlanExecution, Timing, UnitRunState, resolve_units, validate_units
 
 ULID = "01JAD8Q4ZK7V3M2XG9T6R5N0HB"
-FAST = Timing(poll_seconds=0.005, startup_seconds=0.3, focus_seconds=0.3, unreachable_seconds=0.1, spec_poll_seconds=0.005)
+FAST = Timing(poll_seconds=0.005, focus_seconds=0.3, unreachable_seconds=0.1, spec_poll_seconds=0.005)
 
 
 def status(
@@ -220,20 +220,26 @@ class TestOneUnit:
         assert events(execution)[0] == ("executing", [f"products: {root.as_posix()}", "units: mast01", "quorum: 1"])
         assert (root / f"PLAN_{ULID}.toml").exists()
 
-    def test_an_initialized_unit_is_started_up_first(self, site, plans):
-        unit = FakeUnit([status(opstate="initialized"), status(opstate="startingup"), READY, LOCKED])
+    @pytest.mark.parametrize("opstate", ["initialized", "shutdown"])
+    def test_a_unit_not_up_is_left_to_start_itself(self, site, plans, opstate):
+        """No `startup` from control: the unit's `start_acquisition_and_guiding` autostarts.
+        Not up, `why_busy` is unknown (None), and that is not a failure."""
+        unit = FakeUnit([status(opstate=opstate) | {"why_busy": None}, LOCKED])
         execution = make(plans, site, {"mast01": unit})
         assert run(execution) == "completed"
-        assert unit.put_methods()[0] == "startup"
-        assert what(execution)[1] == "unit-starting-up"
+        assert unit.put_methods()[0] == "start_acquisition_and_guiding"
+        assert "unit-starting-up" not in what(execution)
+
+    def test_a_unit_not_up_but_holding_another_plan_is_busy(self, site, plans):
+        held = status(opstate="shutdown") | {"why_busy": None, "plan_id": "01OTHER"}
+        execution = make(plans, site, {"mast01": FakeUnit([held])})
+        assert run(execution) == "failed"
+        assert execution.units["mast01"].errors == ["busy: working on plan 01OTHER"]
 
     @pytest.mark.parametrize(
         ("script", "error"),
         [
             ([status(opstate=None)], "status: opstate not reported"),
-            ([status(opstate="poweringdown")], "startup: opstate is poweringdown"),
-            ([status(operational=False, why_not=["mount: not connected"])], "operational: mount: not connected"),
-            ([status(operational=False)], "operational: not operational, no reason given"),
             ([status(why_busy={"unit": ["Autofocusing"]})], "busy: unit: Autofocusing"),
             ([{**READY, "why_busy": None}], "status: busy state not reported"),
             ([READY, status()], "status: unit does not report its latest acquisition"),
@@ -246,10 +252,13 @@ class TestOneUnit:
         assert execution.units["mast01"].errors == [error]
         assert ("unit-failed", [f"mast01: {error}"]) in events(execution)
 
-    def test_only_cooling_passes_the_operational_check(self, site, plans):
-        cooling = status(operational=False, why_not=["imager: cooling down (-12.0 C, set point -20)"])
-        execution = make(plans, site, {"mast01": FakeUnit([cooling, LOCKED])})
-        assert run(execution) == "completed"
+    def test_a_unit_refusing_to_start_fails_in_its_words(self, site, plans):
+        """Not operational is the unit's to say now, as its autostartup route's refusal."""
+        refusal = "autostartup(endpoint_start_acquisition_and_guiding): started up but not operational; mount: not connected"
+        unit = FakeUnit([READY], refuse={"start_acquisition_and_guiding": refusal})
+        execution = make(plans, site, {"mast01": unit})
+        assert run(execution) == "failed"
+        assert execution.units["mast01"].errors == [f"acquisition: {refusal}"]
 
 
 class TestFocusOnStar:
@@ -278,10 +287,10 @@ class TestTheAutostartingCalls:
         assert unit.timeouts["focus_on_star"] == execution.timing.autostartup_call_seconds == 150.0
         assert unit.timeouts["start_acquisition_and_guiding"] == 150.0
 
-    def test_startup_keeps_the_default(self, site, plans):
-        unit = FakeUnit([status(opstate="initialized"), READY, LOCKED])
+    def test_control_sends_no_startup(self, site, plans):
+        unit = FakeUnit([status(opstate="initialized") | {"why_busy": None}, LOCKED])
         assert run(make(plans, site, {"mast01": unit})) == "completed"
-        assert unit.timeouts["startup"] is None
+        assert "startup" not in unit.put_methods()
 
 
 class TestTheStarLock:
@@ -337,9 +346,9 @@ class TestQuorum:
         assert summary[0].startswith("quorum reached: 2 of 3 guiding")
 
     def test_too_many_failures_fail_at_once_and_abort_the_rest(self, site, plans):
-        broken = status(operational=False, why_not=["mount: not connected"])
+        refusal = {"start_acquisition_and_guiding": "started up but not operational; mount: not connected"}
         slow = FakeUnit([READY, RUNNING])
-        units = {"mast01": FakeUnit([broken]), "mast02": FakeUnit([broken]), "mast03": slow}
+        units = {"mast01": FakeUnit([READY], refuse=refusal), "mast02": FakeUnit([READY], refuse=refusal), "mast03": slow}
         execution = make(plans, site, units, quorum=2)
         assert run(execution) == "failed"
         assert "abort" in slow.put_methods()
@@ -357,7 +366,6 @@ class TestAbort:
     def test_every_unit_is_aborted_and_failures_recorded(self, site, plans):
         units = {"mast01": FakeUnit([READY, RUNNING]), "mast02": FakeUnit([READY, RUNNING], abort_fails=True)}
         execution = make(plans, site, units)
-        execution.timing = Timing(**{**FAST.__dict__, "startup_seconds": 5})
         execution.plan.timeout_to_guiding = 60
         runner = threading.Thread(target=execution.run)
         runner.start()
@@ -434,8 +442,12 @@ class TestTheQuorumHolds:
         return {"instrument": "highspec", "requested_exposure_duration": 60}
 
     def test_losing_units_before_guiding_says_so(self, site, plans):
-        broken = status(operational=False, why_not=["mount: not connected"])
-        units = {"mast01": FakeUnit([broken]), "mast02": FakeUnit([broken]), "mast03": FakeUnit([READY, RUNNING])}
+        refusal = {"start_acquisition_and_guiding": "started up but not operational; mount: not connected"}
+        units = {
+            "mast01": FakeUnit([READY], refuse=refusal),
+            "mast02": FakeUnit([READY], refuse=refusal),
+            "mast03": FakeUnit([READY, RUNNING]),
+        }
         execution = make(plans, site, units, quorum=2)
         run(execution)
         assert events(execution)[-1][1][0] == "quorum 2 lost: 1 of 3 units left"

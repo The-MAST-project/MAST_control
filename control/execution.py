@@ -1,11 +1,12 @@
 """Executing a plan: one worker thread per unit, and a quorum (plans/control_acquisition_design.md 5).
 
 Replaces the stepped `probe -> dispatch -> wait_for_guiding` phases that lived on `Plan`. Each
-unit is taken, by its own worker, through start-up, the operational and busy checks, an
-optional `focus_on_star`, and `start_acquisition_and_guiding`, until it is guiding -- locked on
-a star -- or fails in its own words. The plan succeeds when `quorum` units are guiding, and
-fails as soon as too many have failed for that to be possible. A plan with a spectrograph then
-exposes it (5.7).
+unit is taken, by its own worker, through the busy check, an optional `focus_on_star`, and
+`start_acquisition_and_guiding`, until it is guiding -- locked on a star -- or fails in its own
+words. Starting the unit up, and refusing one that is not operational, are the unit's: both
+routes declare `autostartup` (MAST_unit#395). The plan succeeds when `quorum` units are
+guiding, and fails as soon as too many have failed for that to be possible. A plan with a
+spectrograph then exposes it (5.7).
 
 Every unit transition is an event in the plan's file, so the file says which units made the
 quorum and why the others did not. Products are linked into the execution's products folder
@@ -31,7 +32,6 @@ from common.mast_logging import get_logger
 from common.models.events import EventModel
 from common.models.latest import AcquisitionState
 from common.models.plans import Plan, PlanProducts
-from common.models.statuses import operational_but_for_cooling
 
 logger = get_logger(__name__)
 
@@ -43,7 +43,6 @@ OUTCOME_FOLDER: dict[str, str] = {"completed": "completed", "failed": "failed", 
 
 class UnitRunState(StrEnum):
     PENDING = "pending"
-    STARTING_UP = "starting-up"
     FOCUSING = "focusing"
     ACQUIRING = "acquiring"
     GUIDING = "guiding"
@@ -55,7 +54,6 @@ TERMINAL = (UnitRunState.GUIDING, UnitRunState.FAILED, UnitRunState.ABORTED)
 
 #: The event written when a unit enters a state (5.9). One per change, never per poll.
 STATE_EVENT = {
-    UnitRunState.STARTING_UP: "unit-starting-up",
     UnitRunState.FOCUSING: "unit-focusing",
     UnitRunState.ACQUIRING: "unit-acquiring",
     UnitRunState.GUIDING: "unit-guiding",
@@ -76,7 +74,6 @@ class Timing:
     """Every wait, injectable, so a test runs in milliseconds and never sleeps for real (8)."""
 
     poll_seconds: float = 3.0
-    startup_seconds: float = 600.0
     focus_seconds: float = 600.0
     unreachable_seconds: float = 30.0
     #: The HTTP timeout on a PUT to a route the unit declares `autostartup` (`focus_on_star`,
@@ -425,49 +422,39 @@ class PlanExecution:
         return _UnitFailedError(step, f"timed out after {seconds:g} s, unit aborted")
 
     def _take_unit_to_guiding(self, run: UnitRun) -> None:
-        """5.4, steps 1-5; any step that fails raises, with its prefix."""
-        self._ready(run)
+        """5.4; any step that fails raises, with its prefix."""
+        self._not_busy(run)
         ra, dec = float(self.plan.target.ra_hours), float(self.plan.target.dec_degrees)
         coordinates = {"ra_j2000_hours": f"{ra:.6f}", "dec_j2000_degs": f"{dec:+.6f}"}
         if self.plan.autofocus:
             self._focus_on_star(run, coordinates)
         self._acquire(run, coordinates)
 
-    def _ready(self, run: UnitRun) -> None:
-        """Steps 1-3: started up, operational (or only cooling), and not busy."""
-        status = self._status(run, "startup")
+    def _not_busy(self, run: UnitRun) -> None:
+        """The unit is not busy with other work, nor working for another plan.
 
-        # 1. Opstate
+        The only readiness check left here. Starting the unit up and refusing one that is not
+        operational (or only cooling) are the unit's own, on the routes control calls next; but
+        nothing on the unit refuses them for being busy, so an operator's exposure or a direct
+        slew would otherwise be taken over by the plan.
+        """
+        status = self._status(run, "busy")
         opstate = _get(status, "opstate")
         if opstate is None:
             raise _UnitFailedError("status", "opstate not reported")
-        if opstate in ("initialized", "shutdown"):
-            self._set(run, UnitRunState.STARTING_UP)
-            self._put(run, "startup", "startup")
-            deadline = time.monotonic() + self.timing.startup_seconds
-            while _get(status, "opstate") != "startedup":
-                if time.monotonic() >= deadline:
-                    raise self._timed_out(run, "startup", self.timing.startup_seconds)
-                self._pause(self.timing.poll_seconds)
-                status = self._status(run, "startup")
-        elif opstate != "startedup":
-            raise _UnitFailedError("startup", f"opstate is {opstate}")
+        owner = _get(status, "plan_id")
+        if owner is not None and owner != self.plan.ulid:
+            raise _UnitFailedError("busy", f"working on plan {owner}")
+        # A unit that is not started up is doing nothing, and reports `why_busy` as unknown
+        # (None) -- its idleness is only reckoned while STARTED_UP. The route starts it up.
+        if opstate != "startedup":
+            return
 
-        # 2. Operational, or only cooling
-        reasons = _get(status, "why_not_operational") or []
-        if not operational_but_for_cooling(_get(status, "operational", False), reasons):
-            if not reasons:
-                raise _UnitFailedError("operational", "not operational, no reason given")
-            raise _UnitFailedError("operational", "; ".join(str(r) for r in reasons))
-
-        # 3. Busy -- working for this plan already is not busy: a revived plan runs again
+        # Working for this plan already is not busy: a revived plan runs again
         # under the same token, and its units may still hold it (6.6).
         why_busy = _get(status, "why_busy")
         if why_busy is None:
             raise _UnitFailedError("status", "busy state not reported")
-        owner = _get(status, "plan_id")
-        if owner is not None and owner != self.plan.ulid:
-            raise _UnitFailedError("busy", f"working on plan {owner}")
         if owner == self.plan.ulid:
             why_busy = {k: [f for f in v if f != "ExecutingPlan"] for k, v in why_busy.items()}
             why_busy = {k: v for k, v in why_busy.items() if v}

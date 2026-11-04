@@ -31,12 +31,15 @@ python -m pytest tests/ -q -ra   # from the repo root, in the venv that has mast
 ## Plan execution (`control/execution.py`)
 
 `PlanExecution` runs one plan: **one worker thread per unit**, each taking its unit through
-start-up, the operational and busy checks, an optional `focus_on_star`, and
-`start_acquisition_and_guiding`, until it is guiding -- PHD2 locked on a star -- or fails in its
-own words (`startup:`, `operational:`, `busy:`, `focus_on_star:`, `acquisition:`, `guiding:`,
-or `status:` when control could not learn the unit's state). The plan **succeeds when `quorum`
-units are guiding**, and fails as soon as too many have failed for that. A plan with a
-spectrograph then exposes it. Every unit transition is an event in the plan file.
+the busy check, an optional `focus_on_star`, and `start_acquisition_and_guiding`, until it is
+guiding -- PHD2 locked on a star -- or fails in its own words (`busy:`, `focus_on_star:`,
+`acquisition:`, `guiding:`, or `status:` when control could not learn the unit's state).
+**Control does not start units up**: both routes declare `autostartup` on the unit
+(MAST_unit#395), which starts itself, or refuses with its `why_not_operational` -- read here
+as the `focus_on_star:` or `acquisition:` error. Those two PUTs therefore get
+`Timing.autostartup_call_seconds` (150 s), above the unit's `seconds_to_autostartup`.
+The plan **succeeds when `quorum` units are guiding**, and fails as soon as too many have
+failed for that. A plan with a spectrograph then exposes it. Every unit transition is an event in the plan file.
 
 - `Controller.start_execution(plan, path)` starts one; there is one `in_progress` at a time, and
   `last_execution` keeps the last for `acquisition_status`. A `Batch` is refused.
