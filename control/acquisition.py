@@ -24,7 +24,7 @@ from common.const import Const
 from common.mast_logging import get_logger
 from common.models.events import EventModel
 from common.models.plans import Plan, plan_to_toml
-from common.models.statuses import COOLING_DOWN_REASON
+from common.models.statuses import operational_but_for_cooling
 from common.models.targets import resolve_target
 from common.object_resolver import ObjectNameError
 from common.parsers import ANY_UNITS
@@ -195,7 +195,7 @@ def _status_cells(status: Any) -> list[str]:
         return ["unreachable"] * 5
     operational = _get(status, "operational", False)
     reasons = _get(status, "why_not_operational") or []
-    if not operational and reasons and all(str(r).startswith(COOLING_DOWN_REASON) for r in reasons):
+    if not operational and operational_but_for_cooling(operational, reasons):
         operational_cell = "True (cooling)"
     else:
         operational_cell = str(bool(operational))

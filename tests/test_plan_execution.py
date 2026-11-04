@@ -66,6 +66,7 @@ class FakeUnit:
         self.abort_fails = abort_fails
         self.unreachable = unreachable  # this many status reads fail first
         self.puts: list[tuple[str, dict | None]] = []
+        self.timeouts: dict[str, float | None] = {}
         self.lock = threading.Lock()
 
     def _next(self, script):
@@ -85,6 +86,7 @@ class FakeUnit:
     async def put(self, method, params=None, json=None, timeout=None):
         with self.lock:
             self.puts.append((method, params))
+            self.timeouts[method] = timeout
         if method == "abort" and self.abort_fails:
             return {"succeeded": False, "errors": ["abort refused"]}
         if method in self.refuse:
@@ -263,6 +265,23 @@ class TestFocusOnStar:
         execution = make(plans, site, {"mast01": unit}, autofocus=True)
         assert run(execution) == "failed"
         assert execution.units["mast01"].errors == ["focus_on_star: no isolated star"]
+
+
+class TestTheAutostartingCalls:
+    """`focus_on_star` and `start_acquisition_and_guiding` may start the unit up first (the
+    unit's `autostartup`), so they get a timeout longer than the unit's wait; others do not."""
+
+    def test_they_get_the_long_timeout(self, site, plans):
+        unit = FakeUnit([READY, LOCKED], focus=[{"running": False, "outcome": "solved"}])
+        execution = make(plans, site, {"mast01": unit}, autofocus=True)
+        assert run(execution) == "completed"
+        assert unit.timeouts["focus_on_star"] == execution.timing.autostartup_call_seconds == 150.0
+        assert unit.timeouts["start_acquisition_and_guiding"] == 150.0
+
+    def test_startup_keeps_the_default(self, site, plans):
+        unit = FakeUnit([status(opstate="initialized"), READY, LOCKED])
+        assert run(make(plans, site, {"mast01": unit})) == "completed"
+        assert unit.timeouts["startup"] is None
 
 
 class TestTheStarLock:
