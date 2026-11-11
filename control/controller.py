@@ -45,6 +45,7 @@ from common.utils import (
 from control.acquisition import Acquisitions
 from control.execution import PlanExecution
 from control.planning import Plan, Planner
+from control.safety import SafetyMonitor
 
 logger = get_logger(__name__)
 
@@ -551,6 +552,10 @@ class Controller(Activities):
         self.refresh()
         self.fetch_timer.start()
 
+        # The weather-service poll behind `GET /is_safe`. Its thread is a daemon and never raises.
+        self.safety_monitor = SafetyMonitor()
+        self.safety_monitor.start()
+
         # Register cleanup on program exit
         atexit.register(self._cleanup_on_exit)
 
@@ -825,6 +830,10 @@ class Controller(Activities):
                     )
 
             return CanonicalResponse(value=ret.model_dump())
+
+    def endpoint_is_safe(self) -> CanonicalResponse:
+        """`{"is_safe": bool}`, plus `"reasons": [str, ...]` when it is not safe. See `control.safety`."""
+        return self.safety_monitor.endpoint_is_safe()
 
     def endpoint_controller_status(self) -> CanonicalResponse:
         """
@@ -1193,6 +1202,8 @@ class Controller(Activities):
         # Stop timers
         if hasattr(self, "fetch_timer") and self.fetch_timer:
             self.fetch_timer.cancel()
+        if hasattr(self, "safety_monitor"):
+            self.safety_monitor.stop()
 
         # Shutdown executor gracefully
         if hasattr(self, "executor"):
@@ -1210,6 +1221,8 @@ class Controller(Activities):
         router.add_api_route(base_path + "/status", tags=[tag], endpoint=self.status)
         router.add_api_route(base_path + "/startup", tags=[tag], endpoint=self.startup)
         router.add_api_route(base_path + "/shutdown", tags=[tag], endpoint=self.shutdown)
+        # Is it safe to observe: one centralised answer for the units, the scheduler and the rest.
+        router.add_api_route(base_path + "/is_safe", tags=[tag], endpoint=self.endpoint_is_safe)
         # The workload in progress, a plan or a batch: there is only ever one (6.6).
         router.add_api_route(base_path + "/abort", tags=[tag], endpoint=self.endpoint_abort, methods=["PUT"])
 
