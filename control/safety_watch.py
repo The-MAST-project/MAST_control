@@ -149,6 +149,7 @@ class Watch:
         self._latest: tuple[dict[str, dict] | None, list[str]] = (None, [])
         self._started = started or datetime.datetime.now(datetime.UTC)
         self._warm_until: datetime.datetime | None = None
+        self._was_warming: bool | None = None
         self._stretch_start: datetime.datetime | None = None
 
     # ---- what the monitor's poll sees, kept for the JSONL ----
@@ -187,12 +188,23 @@ class Watch:
             self.summary.blocked_checks.update(blockers)
         self._last_check = now
 
-        self._log_change(now, verdict.is_safe, reasons, blockers, warming)
+        said = self._log_change(now, verdict.is_safe, reasons, blockers, warming)
+        if self._was_warming and not warming and not said:
+            # One line for the end of the warm-up instead of one per window that filled during it --
+            # unless a change of state was just reported, which says as much.
+            listing = "".join(f"\n  - {r}" for r in reasons)
+            logger.log(
+                20 if verdict.is_safe else 30,
+                f"safety: warm-up over, the windows are full; {'SAFE' if verdict.is_safe else 'NOT SAFE'}{listing}",
+            )
+        self._was_warming = warming
         self._append(now, verdict.is_safe, blockers)
 
     def _log_change(
         self, now: datetime.datetime, is_safe: bool, reasons: list[str], blockers: frozenset[str], warming: bool
-    ) -> None:
+    ) -> bool:
+        """Log what changed; True if a line was written."""
+        said = True
         note = " [warming up: windows are still filling]" if warming else ""
         listing = "".join(f"\n  - {r}" for r in reasons)
         assert self.summary is not None
@@ -214,15 +226,20 @@ class Watch:
                 logger.info(f"safety: SAFE (was not safe for {held}){note}")
             else:
                 logger.warning(f"safety: NOT SAFE (was safe for {held}){note}{listing}")
-        elif not is_safe and blockers != self.blockers:
+        elif not is_safe and blockers != self.blockers and not warming:
+            # Not while warming up: every window that fills would be a line, and none says anything
+            # about the weather. The end of the warm-up is reported once instead.
             logger.warning(
                 f"safety: still not safe, now blocked by {sorted(blockers)} (was {sorted(self.blockers)}){note}{listing}"
             )
+        else:
+            said = False
 
         if self.state is None or is_safe != self.state:
             self.since = now
         self.state = is_safe
         self.blockers = blockers
+        return said
 
     def _roll_night(self, now: datetime.datetime) -> None:
         night = observing_night(now)

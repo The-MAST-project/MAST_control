@@ -44,7 +44,7 @@ class Rig:
         self.watch._latest = (self.answer, [] if self.answer is not None else ["down"])
         return self.watch._latest
 
-    def step(self, seconds: float = 20, **values: float | None) -> None:
+    def step(self, seconds: float = 20, *, check: bool = True, **values: float | None) -> None:
         """Advance the clock; the service says `values` (or `down=True`: it does not answer); poll; check."""
         self.now += datetime.timedelta(seconds=seconds)
         down = bool(values.pop("down", False))
@@ -55,7 +55,8 @@ class Rig:
         for name, entry in (self.answer or {}).items():
             if name in self.monitor.safety.sensors:
                 self.monitor.safety.ingest(name, (float(entry["value"]), S), now=self.now)
-        self.watch.check(self.now)
+        if check:
+            self.watch.check(self.now)
 
     def lines(self) -> list[dict]:
         files = sorted(self.data.glob("safety-monitor-*.jsonl"))
@@ -116,6 +117,40 @@ def test_a_silent_service_is_recorded(rig):
     (line,) = rig.lines()
     assert line["service_ok"] is False and line["errors"] == ["down"]
     assert line["is_safe"] is False
+
+
+def warm_rig(tmp_path, caplog, wind: float, minutes: int = 3) -> list[str]:
+    caplog.set_level(logging.INFO)
+    doc = SafetyConfig(
+        site="ns", sensors={"wind_speed": {"max": 25.0, "settling": 60}, "rain_rate": {"max": 0.0, "settling": 120}}
+    )
+    rig = Rig(tmp_path, document=doc)
+    for _ in range(3 * minutes):  # wind's window fills at 1 minute, rain's at 2
+        for _ in range(3):
+            rig.step(5, check=False, wind_speed=wind, rain_rate=0.0)  # the monitor polls every 5 s ...
+        rig.step(5, wind_speed=wind, rain_rate=0.0)  # ... and is asked every 20
+    return [m for m in messages(caplog) if m.startswith("safety:")]
+
+
+def test_warming_up_is_quiet_about_blockers(tmp_path, caplog):
+    said = warm_rig(tmp_path, caplog, wind=10.0)
+    assert not any("still not safe" in m for m in said)  # no line per window that filled
+    # It turns safe a little before the warm-up is formally over (a window may be 15 s short at its
+    # edge), so the change comes tagged and the end of the warm-up follows, once.
+    assert any(m.startswith("safety: SAFE (was not safe") and "warming up" in m for m in said)
+    assert sum("warm-up over" in m for m in said) == 1
+
+
+def test_the_end_of_the_warm_up_is_reported_once_when_nothing_else_says_so(tmp_path, caplog):
+    said = warm_rig(tmp_path, caplog, wind=31.0)  # not safe throughout, so no change of state ends the warm-up
+    (over,) = [m for m in said if "warm-up over" in m]
+    assert "NOT SAFE" in over and "wind_speed: 31 > 25" in over
+
+
+def test_blocker_changes_after_the_warm_up_are_still_logged(rig, caplog):
+    rig.step(wind_speed=31.0, rain_rate=0.0)
+    rig.step(wind_speed=31.0, rain_rate=1.0)
+    assert any("still not safe" in m for m in messages(caplog))
 
 
 def test_warming_up_is_labelled_and_left_out_of_the_summary(tmp_path, caplog):
