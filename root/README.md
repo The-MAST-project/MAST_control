@@ -88,6 +88,14 @@ The live vhost is kept as `.bak` across the test and restored if `nginx -t` fail
 bad config cannot survive the target that installed it. `.bak` is not matched by the
 `conf.d/*.conf` include, so the backup is inert.
 
+### SMB tunnel to last0 (not deployed by the Makefile)
+
+`etc/nginx/stream.d/last0-smb.conf` forwards TCP 4445 to last0's SMB (10.23.1.25:445), open
+to anyone. The Makefile does not install it, and two things on the host must exist first or
+`nginx -t` fails: the stream module (`apt install libnginx-mod-stream`; nginx is built
+`--with-stream=dynamic` and `modules-enabled/` was empty on 2026-11-12) and a top-level
+`include /etc/nginx/stream.d/*.conf;` in `/etc/nginx/nginx.conf`, outside `http { }`.
+
 `deploy-prometheus` reloads with **SIGHUP**, not `systemctl reload`: the unit declares no
 `ExecReload` (`CanReload=no`), and prometheus runs without `--web.enable-lifecycle`, so
 `POST /-/reload` answers 403. SIGHUP costs no scrape gap. The config is checked with
