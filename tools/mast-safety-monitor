@@ -1,0 +1,21 @@
+#!/usr/bin/env python3
+"""mast-safety-monitor -- watch is_safe over the nights. See control/safety_watch.py."""
+
+# ── venv auto-loader ──────────────────────────────────────────────────────────
+import os
+import sys
+from pathlib import Path
+
+_repo = Path(__file__).resolve().parent.parent
+_venv_dir = _repo / ".venv"
+_venv_python = _venv_dir / "bin" / "python"
+if _venv_python.exists() and Path(sys.prefix) != _venv_dir:
+    os.execv(str(_venv_python), [str(_venv_python)] + sys.argv)
+
+# ── run ───────────────────────────────────────────────────────────────────────
+sys.path.insert(0, str(_repo))
+
+from control.safety_watch import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())
