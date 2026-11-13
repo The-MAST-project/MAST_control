@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
+from common import iers_policy
 from common.config import Config
 from common.mast_logging import configure_logging, get_logger
 from control.controller import Controller
@@ -19,6 +20,18 @@ _parser.add_argument("--log-level", default=None, help="DEBUG, INFO, WARNING, ..
 configure_logging(_parser.parse_known_args()[0].log_level)
 
 logger = get_logger(__name__)
+
+# The IERS policy, at module scope and before the Controller is built: it has to be in force
+# before the first coordinate transform in the process, and `Config()` can reach one through
+# `Site.observing_window()`, which the scheduler calls. Without it astropy raises once the
+# Earth-orientation table's predictions are more than 30 days old, which stopped a unit's
+# mount on 2026-10-01 (MAST_common#139). `common` guards that call itself; this one makes the
+# policy explicit and logged at startup, instead of applied by the guard on first use.
+#
+# The policy only: not the cache or the refresher MAST_unit runs. Those keep the table
+# *accurate*, which matters to a mount's pointing and not to dusk and dawn times, where a
+# UT1-UTC error of under a second is far below what the scheduler resolves.
+iers_policy.configure_astropy()
 
 
 @asynccontextmanager
