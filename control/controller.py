@@ -3,6 +3,7 @@ import atexit
 import os
 import signal
 import socket
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,7 +11,7 @@ from threading import Event, Lock, Thread
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, Query, WebSocket
 from pydantic import BaseModel, Field, ValidationError
 
 from common.activities import Activities, ControllerActivities
@@ -45,6 +46,34 @@ from common.utils import (
 from control.acquisition import Acquisitions
 from control.execution import PlanExecution
 from control.planning import Plan, Planner
+
+#: The unit's dances (MAST_unit `dance.STYLES`); control names them to refuse a typo before touching a unit.
+DanceName = Literal["foxtrot", "waltz", "alto"]
+
+#: The unit names (mast00 ... mast20), so a bad one is refused at the door and the API docs list the choices.
+UnitName = Literal[
+    "mast00",
+    "mast01",
+    "mast02",
+    "mast03",
+    "mast04",
+    "mast05",
+    "mast06",
+    "mast07",
+    "mast08",
+    "mast09",
+    "mast10",
+    "mast11",
+    "mast12",
+    "mast13",
+    "mast14",
+    "mast15",
+    "mast16",
+    "mast17",
+    "mast18",
+    "mast19",
+    "mast20",
+]
 
 logger = get_logger(__name__)
 
@@ -902,6 +931,89 @@ class Controller(Activities):
         """Tell a deployed, idle unit to shut down (the unit's own `shutdown`)."""
         return await self._unit_lifecycle(site_name, unit_name, "shutdown")
 
+    #: How long, and how often, `endpoint_units_dance` waits for units to be STARTED_UP.
+    DANCE_STARTUP_TIMEOUT_SECONDS = 300.0
+    DANCE_POLL_SECONDS = 2.0
+
+    async def _unit_opstate(self, unit_name: str) -> str | None:
+        """The unit's own opstate ("startedup", ...), or None when it cannot be read."""
+        response = await UnitApi(hostname=unit_name).get("status")
+        if not response.succeeded:
+            return None
+        value = response.value
+        return value.get("opstate") if isinstance(value, dict) else getattr(value, "opstate", None)
+
+    async def endpoint_units_dance(
+        self,
+        site_name: str,
+        unit_names: Annotated[list[UnitName], Query()],
+        dance: DanceName = "foxtrot",
+        timeout: float | None = None,
+    ) -> CanonicalResponse:
+        """Have the named units dance, all starting together.
+
+        Units that are not started up are told to start up, then all are waited for until they are
+        STARTED_UP (`timeout` seconds, default 300); only then does every unit that made it get
+        `start_dancing` at once, so they start within milliseconds of one another rather than each
+        as its own startup finishes. A unit that is refused, does not come up in time or refuses the
+        dance is reported and the others dance anyway. `value` is the outcome per unit, `errors` is
+        set when any unit did not dance.
+        """
+        timeout = self.DANCE_STARTUP_TIMEOUT_SECONDS if timeout is None else timeout
+        unit_names = list(dict.fromkeys(unit_names))
+        if not unit_names:
+            return CanonicalResponse(errors=["no units named"])
+        outcomes: dict[str, str] = {}
+        for name in unit_names:
+            refusal = self._unit_lifecycle_refusal(site_name, name, "startup")
+            if refusal is not None:
+                outcomes[name] = refusal
+        if outcomes:  # nothing is touched when any name is wrong
+            return CanonicalResponse(value=outcomes, errors=[f"{n}: {why}" for n, why in outcomes.items()])
+
+        waiting: set[str] = set()
+        for name in unit_names:
+            if await self._unit_opstate(name) != "startedup":
+                response = await self._unit_lifecycle(site_name, name, "startup")
+                if not response.succeeded:
+                    outcomes[name] = "startup refused: " + "; ".join(response.errors or ["no reason given"])
+                    continue
+            waiting.add(name)
+
+        deadline = time.monotonic() + timeout
+        ready: set[str] = set()
+        while waiting - ready:
+            for name in sorted(waiting - ready):
+                if await self._unit_opstate(name) == "startedup":
+                    ready.add(name)
+            if waiting - ready:
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(self.DANCE_POLL_SECONDS)
+        for name in waiting - ready:
+            outcomes[name] = f"not STARTED_UP after {timeout:g} s"
+
+        logger.info(f"{site_name}: {sorted(ready)} start dancing the {dance}")
+        names = sorted(ready)
+        responses = await asyncio.gather(*(UnitApi(hostname=n).put("start_dancing", params={"style": dance}) for n in names))
+        for name, response in zip(names, responses, strict=True):
+            outcomes[name] = "dancing" if response.succeeded else "refused: " + "; ".join(response.errors or ["no reason"])
+        failed = [f"{n}: {o}" for n, o in outcomes.items() if o != "dancing"]
+        return CanonicalResponse(value=outcomes, errors=failed or None)
+
+    async def endpoint_units_stop_dancing(
+        self, site_name: str, unit_names: Annotated[list[UnitName], Query()]
+    ) -> CanonicalResponse:
+        """Tell the named units to stop dancing (the unit's own `stop_dancing`), all at once."""
+        unit_names = list(dict.fromkeys(unit_names))
+        responses = await asyncio.gather(*(UnitApi(hostname=n).put("stop_dancing") for n in unit_names))
+        outcomes = {
+            n: "ok" if r.succeeded else "; ".join(r.errors or ["no reason"])
+            for n, r in zip(unit_names, responses, strict=True)
+        }
+        failed = [f"{n}: {o}" for n, o in outcomes.items() if o != "ok"]
+        return CanonicalResponse(value=outcomes, errors=failed or None)
+
     def endpoint_power_switch_status(self, site_name: str, unit_name: str) -> CanonicalResponse:
         if site_name not in self.power_switches or unit_name not in self.power_switches[site_name]:
             return CanonicalResponse(errors=[f"no power_switch for {site_name=}, {unit_name=}"])
@@ -1251,6 +1363,19 @@ class Controller(Activities):
             base_path + "/unit/{site_name}/{unit_name}/shutdown",
             tags=[tag],
             endpoint=self.endpoint_unit_shutdown,
+            methods=["PUT"],
+        )
+
+        router.add_api_route(
+            base_path + "/units/{site_name}/dance",
+            tags=[tag],
+            endpoint=self.endpoint_units_dance,
+            methods=["PUT"],
+        )
+        router.add_api_route(
+            base_path + "/units/{site_name}/stop_dancing",
+            tags=[tag],
+            endpoint=self.endpoint_units_stop_dancing,
             methods=["PUT"],
         )
 
